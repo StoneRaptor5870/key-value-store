@@ -3,7 +3,19 @@
 #include <string.h>
 #include <stdio.h>
 
-// Simple hash function
+static char *my_strdup(const char *s)
+{
+    if (!s)
+        return NULL;
+
+    size_t len = strlen(s) + 1;
+    char *new_str = (char *)malloc(len);
+    if (new_str)
+    {
+        memcpy(new_str, s, len);
+    }
+    return new_str;
+}
 unsigned int hash(const char *key)
 {
     unsigned int hash_val = 0;
@@ -58,16 +70,26 @@ void db_free(Database *db)
 // Set a key-value pair in the database
 void db_set(Database *db, const char *key, const char *value)
 {
+    if (!db || !key || !value)
+        return;
+
     unsigned int index = hash(key);
 
-    // Check if the key already exits
+    // Check if the key already exists
     Entry *current = db->hash_table[index];
     while (current)
     {
         if (strcmp(current->key, key) == 0)
         {
+            // Update existing entry
+            char *new_value = my_strdup(value);
+            if (!new_value)
+            {
+                fprintf(stderr, "Failed to allocate memory for value\n");
+                return;
+            }
             free(current->value);
-            current->value = strdup(value);
+            current->value = new_value;
             return;
         }
         current = current->next;
@@ -75,15 +97,29 @@ void db_set(Database *db, const char *key, const char *value)
 
     // Create new entry
     Entry *new_entry = (Entry *)malloc(sizeof(Entry));
-
     if (!new_entry)
     {
         fprintf(stderr, "Failed to allocate memory for entry\n");
         return;
     }
 
-    new_entry->key = strdup(key);
-    new_entry->value = strdup(value);
+    new_entry->key = my_strdup(key);
+    if (!new_entry->key)
+    {
+        fprintf(stderr, "Failed to allocate memory for key\n");
+        free(new_entry);
+        return;
+    }
+
+    new_entry->value = my_strdup(value);
+    if (!new_entry->value)
+    {
+        fprintf(stderr, "Failed to allocate memory for value\n");
+        free(new_entry->key);
+        free(new_entry);
+        return;
+    }
+
     new_entry->next = db->hash_table[index];
     db->hash_table[index] = new_entry;
 }
@@ -91,6 +127,9 @@ void db_set(Database *db, const char *key, const char *value)
 // Get a value by key from the database
 char *db_get(Database *db, const char *key)
 {
+    if (!db || !key)
+        return NULL;
+
     unsigned int index = hash(key);
 
     Entry *current = db->hash_table[index];
@@ -115,6 +154,9 @@ bool db_exists(Database *db, const char *key)
 // Delete a key from the database
 bool db_delete(Database *db, const char *key)
 {
+    if (!db || !key)
+        return false;
+
     unsigned int index = hash(key);
 
     Entry *current = db->hash_table[index];

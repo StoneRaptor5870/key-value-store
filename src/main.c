@@ -2,204 +2,278 @@
 #include "../include/commands.h"
 #include "../include/utils.h"
 #include "../include/persistence.h"
+#include "../include/server.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <ctype.h>
+#include <unistd.h>
+#include <getopt.h>
+#include <strings.h>
+
+void print_usage(const char *program_name)
+{
+    printf("Usage: %s [OPTIONS]\n", program_name);
+    printf("Options:\n");
+    printf("  -p PORT     Specify server port (default: 8520)\n");
+    printf("  -i          Interactive mode (CLI)\n");
+    printf("  -f FILE     Load database from file at startup\n");
+    printf("  -h          Display this help message\n");
+}
 
 // Main function
-int main()
+int main(int argc, char *argv[])
 {
-    Database *db = db_create();
-    char command[1024];
+    int port = DEFAULT_PORT;
+    bool interactive_mode = false;
+    char *load_file = NULL;
 
-    printf("KEY VALUE STORE (Type 'HELP' for commands)\n");
-
-    while (1)
+    // Parse command line arguments
+    int opt;
+    while ((opt = getopt(argc, argv, "p:if:h")) != -1)
     {
-        printf("key-value-store> ");
-
-        // Get command from user
-        if (fgets(command, sizeof(command), stdin) == NULL)
+        switch (opt)
         {
+        case 'p':
+            port = atoi(optarg);
+            if (port <= 0 || port > 65535)
+            {
+                fprintf(stderr, "Invalid port number\n");
+                return 1;
+            }
             break;
-        }
-
-        // Remove trailing newline
-        command[strcspn(command, "\n")] = '\0';
-
-        // Check for exit command
-        if (strcasecmp(command, "EXIT") == 0 || strcasecmp(command, "QUIT") == 0)
-        {
-            printf("Goodbye!\n");
+        case 'i':
+            interactive_mode = true;
             break;
+        case 'f':
+            load_file = optarg;
+            break;
+        case 'h':
+            print_usage(argv[0]);
+            return 0;
+        default:
+            print_usage(argv[0]);
+            return 1;
         }
+    }
 
-        // Check for help command
-        if (strcasecmp(command, "HELP") == 0)
-        {
-            print_help();
-            continue;
-        }
+    // Create database
+    Database *db = db_create();
 
-        // Tokenise command
-        int token_count = 0;
-        char **tokens = tokenise_command(command, &token_count);
+    // Load database if specified
+    if (load_file)
+    {
+        printf("Loading database from %s...\n", load_file);
+        if (!load_command(db, load_file))
+        {
+            fprintf(stderr, "Failed to load database from %s\n", load_file);
+        }
+    }
 
-        if (token_count == 0)
-        {
-            continue;
-        }
+    // Interactive CLI mode
+    if (interactive_mode)
+    {
+        char command[1024];
 
-        // Process commands
-        if (strcasecmp(tokens[0], "SET") == 0)
+        printf("KEY VALUE STORE (Type 'HELP' for commands)\n");
+
+        while (1)
         {
-            if (token_count != 3)
+            printf("key-value-store> ");
+
+            // Get command from user
+            if (fgets(command, sizeof(command), stdin) == NULL)
             {
-                printf("(error) Wrong number of arguments for 'SET' command\n");
+                break;
             }
-            else
+
+            // Remove trailing newline
+            command[strcspn(command, "\n")] = '\0';
+
+            // Check for exit command
+            if (strcasecmp(command, "EXIT") == 0 || strcasecmp(command, "QUIT") == 0)
             {
-                set_command(db, tokens[1], tokens[2]);
-                printf("OK\n");
+                printf("Goodbye!\n");
+                break;
             }
-        }
-        else if (strcasecmp(tokens[0], "GET") == 0)
-        {
-            if (token_count != 2)
+
+            // Check for help command
+            if (strcasecmp(command, "HELP") == 0)
             {
-                printf("(error) Wrong number of arguments for 'GET' command\n");
+                print_help();
+                continue;
             }
-            else
+
+            // Tokenise command
+            int token_count = 0;
+            char **tokens = tokenise_command(command, &token_count);
+
+            if (token_count == 0)
             {
-                char *value = get_command(db, tokens[1]);
-                if (value)
+                continue;
+            }
+
+            // Process commands
+            if (strcasecmp(tokens[0], "SET") == 0)
+            {
+                if (token_count != 3)
                 {
-                    printf("\"%s\"\n", value);
+                    printf("(error) Wrong number of arguments for 'SET' command\n");
                 }
                 else
                 {
-                    printf("(nil)\n");
-                }
-            }
-        }
-        else if (strcasecmp(tokens[0], "DEL") == 0)
-        {
-            if (token_count != 2)
-            {
-                printf("(error) Wrong number of arguments for 'DEL' command\n");
-            }
-            else
-            {
-                if (del_command(db, tokens[1]))
-                {
-                    printf("(integer) 1\n");
-                }
-                else
-                {
-                    printf("(integer) 0\n");
-                }
-            }
-        }
-        else if (strcasecmp(tokens[0], "EXISTS") == 0)
-        {
-            if (token_count != 2)
-            {
-                printf("(error) Wrong number of arguments for 'EXISTS' command\n");
-            }
-            else
-            {
-                if (exists_command(db, tokens[1]))
-                {
-                    printf("(integer) 1\n");
-                }
-                else
-                {
-                    printf("(integer) 0\n");
-                }
-            }
-        }
-        else if (strcasecmp(tokens[0], "INCR") == 0)
-        {
-            if (token_count != 2)
-            {
-                printf("(error) Wrong number of arguments for 'INCR' command\n");
-            }
-            else
-            {
-                int new_value;
-                if (incr_command(db, tokens[1], &new_value))
-                {
-                    printf("(integer) %d\n", new_value);
-                }
-                else
-                {
-                    printf("(error) Value is not an integer or out of range\n");
-                }
-            }
-        }
-        else if (strcasecmp(tokens[0], "DECR") == 0)
-        {
-            if (token_count != 2)
-            {
-                printf("(error) Wrong number of arguments for 'DECR' command\n");
-            }
-            else
-            {
-                int new_value;
-                if (decr_command(db, tokens[1], &new_value))
-                {
-                    printf("(integer) %d\n", new_value);
-                }
-                else
-                {
-                    printf("(error) Value is not an integer or out of range\n");
-                }
-            }
-        }
-        else if (strcasecmp(tokens[0], "SAVE") == 0)
-        {
-            if (token_count != 2)
-            {
-                printf("(error) Wrong number of arguments for 'SAVE' command\n");
-            }
-            else
-            {
-                if (save_command(db, tokens[1]))
-                {
+                    set_command(db, tokens[1], tokens[2]);
                     printf("OK\n");
                 }
+            }
+            else if (strcasecmp(tokens[0], "GET") == 0)
+            {
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'GET' command\n");
+                }
                 else
                 {
-                    printf("(error) Failed to save database\n");
+                    char *value = get_command(db, tokens[1]);
+                    if (value)
+                    {
+                        printf("\"%s\"\n", value);
+                    }
+                    else
+                    {
+                        printf("(nil)\n");
+                    }
                 }
             }
-        }
-        else if (strcasecmp(tokens[0], "LOAD") == 0)
-        {
-            if (token_count != 2)
+            else if (strcasecmp(tokens[0], "DEL") == 0)
             {
-                printf("(error) Wrong number of arguments for 'LOAD' command\n");
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'DEL' command\n");
+                }
+                else
+                {
+                    if (del_command(db, tokens[1]))
+                    {
+                        printf("(integer) 1\n");
+                    }
+                    else
+                    {
+                        printf("(integer) 0\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "EXISTS") == 0)
+            {
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'EXISTS' command\n");
+                }
+                else
+                {
+                    if (exists_command(db, tokens[1]))
+                    {
+                        printf("(integer) 1\n");
+                    }
+                    else
+                    {
+                        printf("(integer) 0\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "INCR") == 0)
+            {
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'INCR' command\n");
+                }
+                else
+                {
+                    int new_value;
+                    if (incr_command(db, tokens[1], &new_value))
+                    {
+                        printf("(integer) %d\n", new_value);
+                    }
+                    else
+                    {
+                        printf("(error) Value is not an integer or out of range\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "DECR") == 0)
+            {
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'DECR' command\n");
+                }
+                else
+                {
+                    int new_value;
+                    if (decr_command(db, tokens[1], &new_value))
+                    {
+                        printf("(integer) %d\n", new_value);
+                    }
+                    else
+                    {
+                        printf("(error) Value is not an integer or out of range\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "SAVE") == 0)
+            {
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'SAVE' command\n");
+                }
+                else
+                {
+                    if (save_command(db, tokens[1]))
+                    {
+                        printf("OK\n");
+                    }
+                    else
+                    {
+                        printf("(error) Failed to save database\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "LOAD") == 0)
+            {
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'LOAD' command\n");
+                }
+                else
+                {
+                    if (load_command(db, tokens[1]))
+                    {
+                        printf("OK\n");
+                    }
+                    else
+                    {
+                        printf("(error) Failed to load database\n");
+                    }
+                }
             }
             else
             {
-                if (load_command(db, tokens[1]))
-                {
-                    printf("OK\n");
-                }
-                else
-                {
-                    printf("(error) Failed to load database\n");
-                }
+                printf("(error) Unknown command '%s'\n", tokens[0]);
             }
-        }
-        else
-        {
-            printf("(error) Unknown command '%s'\n", tokens[0]);
-        }
 
-        free_tokens(tokens, token_count);
+            free_tokens(tokens, token_count);
+        }
+    }
+    // Server mode (default)
+    else
+    {
+        printf("Starting server on port %d\n", port);
+        if (!start_server(db, port))
+        {
+            fprintf(stderr, "Failed to start server\n");
+            db_free(db);
+            return 1;
+        }
     }
 
     db_free(db);

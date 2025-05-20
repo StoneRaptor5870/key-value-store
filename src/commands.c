@@ -101,14 +101,17 @@ bool decr_command(Database *db, const char *key, int *new_value)
 void print_help()
 {
     printf("Available commands:\n");
-    printf("  SET key value - Set key to hold the string value\n");
-    printf("  GET key - Get the value of key\n");
-    printf("  DEL key - Delete a key\n");
-    printf("  EXISTS key - Check if a key exists\n");
-    printf("  INCR key - Increment the integer value of a key\n");
-    printf("  DECR key - Decrement the integer value of a key\n");
-    printf("  SAVE filename - Save the database to a file\n");
-    printf("  LOAD filename - Load the database from a file\n");
-    printf("  HELP - Display this help\n");
-    printf("  EXIT/QUIT - Exit the program\n");
+    printf("  SET key value       - Set key to hold string value\n");
+    printf("  GET key             - Get the value of key\n");
+    printf("  DEL key             - Delete key\n");
+    printf("  EXISTS key          - Check if key exists\n");
+    printf("  INCR key            - Increment the integer value of key by one\n");
+    printf("  DECR key            - Decrement the integer value of key by one\n");
+    printf("  SAVE filename       - Save the database to a file\n");
+    printf("  LOAD filename       - Load the database from a file\n");
+    printf("  HELP                - Show this help message\n");
+    printf("  EXIT                - Exit the program\n");
+    printf("\nServer options (when running in server mode):\n");
+    printf("  INFO                - Get server information\n");
+    printf("  PING                - Test connection (returns PONG)\n");
 }

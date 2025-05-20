@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "../include/utils.h"
 #include <stdlib.h>
 #include <string.h>
@@ -118,4 +119,145 @@ char **tokenise_command(const char *command, int *token_count)
     }
 
     return tokens;
+}
+
+// Function to parse RESP (Redis Serialization Protocol) command
+char *parse_resp(char *input, int *token_count)
+{
+    *token_count = 0;
+
+    // Check if this is a RESP array message (starts with *)
+    if (input[0] != '*')
+    {
+        // If not RESP, just return the original input
+        return strdup(input);
+    }
+
+    // Parse array size
+    int array_size = atoi(input + 1);
+    if (array_size <= 0)
+    {
+        return NULL;
+    }
+
+    // Allocate memory for all parts
+    char **parts = malloc(sizeof(char *) * array_size);
+    if (!parts)
+    {
+        return NULL;
+    }
+
+    // Find the end of the first line
+    char *line_end = strchr(input, '\r');
+    if (!line_end || line_end[1] != '\n')
+    {
+        free(parts);
+        return NULL;
+    }
+
+    char *current = line_end + 2; // Move past \r\n
+
+    // Parse each bulk string in the array
+    for (int i = 0; i < array_size; i++)
+    {
+        // Check if this is a bulk string
+        if (current[0] != '$')
+        {
+            // Cleanup already allocated parts
+            for (int j = 0; j < i; j++)
+            {
+                free(parts[j]);
+            }
+            free(parts);
+            return NULL;
+        }
+
+        // Parse string length
+        int str_len = atoi(current + 1);
+        if (str_len < 0)
+        {
+            // Cleanup
+            for (int j = 0; j < i; j++)
+            {
+                free(parts[j]);
+            }
+            free(parts);
+            return NULL;
+        }
+
+        // Find the end of the length line
+        line_end = strchr(current, '\r');
+        if (!line_end || line_end[1] != '\n')
+        {
+            // Cleanup
+            for (int j = 0; j < i; j++)
+            {
+                free(parts[j]);
+            }
+            free(parts);
+            return NULL;
+        }
+
+        current = line_end + 2; // Move past \r\n
+
+        // Allocate memory for the string and copy it
+        parts[i] = malloc(str_len + 1);
+        if (!parts[i])
+        {
+            // Cleanup
+            for (int j = 0; j < i; j++)
+            {
+                free(parts[j]);
+            }
+            free(parts);
+            return NULL;
+        }
+
+        memcpy(parts[i], current, str_len);
+        parts[i][str_len] = '\0'; // Null-terminate the string
+
+        current += str_len + 2; // Move past string and \r\n
+    }
+
+    // Convert the array of strings to a single space-separated command string
+    size_t total_len = 0;
+    for (int i = 0; i < array_size; i++)
+    {
+        total_len += strlen(parts[i]) + 1; // +1 for space
+    }
+
+    char *result = malloc(total_len);
+    if (!result)
+    {
+        // Cleanup
+        for (int i = 0; i < array_size; i++)
+        {
+            free(parts[i]);
+        }
+        free(parts);
+        return NULL;
+    }
+
+    result[0] = '\0'; // Initialize empty string
+
+    for (int i = 0; i < array_size; i++)
+    {
+        if (i > 0)
+        {
+            strcat(result, " ");
+        }
+        strcat(result, parts[i]);
+    }
+
+    // Set the token count to the array size
+    *token_count = array_size;
+
+    // Cleanup
+    for (int i = 0; i < array_size; i++)
+    {
+        free(parts[i]);
+    }
+    free(parts);
+
+    return result;
 }
