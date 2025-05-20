@@ -3,7 +3,7 @@ Key Value Store
 File Organisation
 
 ```
-mini-redis/
+key-value-store/
 ├── include/
 │   ├── database.h      # Database structure and core operations
 │   ├── commands.h      # KV Store command implementations
@@ -18,12 +18,14 @@ mini-redis/
 └── Makefile            # Build configuration
 ```
 
+```
 Design Principles
 
 Separation of Concerns: Each module has a clear responsibility
 Encapsulation: The database is encapsulated for easier maintenance
 Modularity: Components can be modified independently
 Reusability: Core functionality can be reused in other projects
+```
 
 Build Instructions
 

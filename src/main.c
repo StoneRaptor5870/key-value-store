@@ -43,7 +43,7 @@ int main()
             continue;
         }
 
-        // Tokenize command
+        // Tokenise command
         int token_count = 0;
         char **tokens = tokenise_command(command, &token_count);
 
