@@ -2,9 +2,12 @@
 #include "../include/database.h"
 #include "../include/commands.h"
 #include "../include/utils.h"
+#include "../include/persistence.h"
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -18,7 +21,7 @@ int server_socket;
 // Signal handler for graceful shutdown
 void handle_signal(int signal)
 {
-    printf("\nShutting down server...\n");
+    printf("\nReceived signal %d. Shutting down server...\n", signal);
     close(server_socket);
     exit(0);
 }
@@ -140,6 +143,8 @@ void handle_client(int client_socket, Database *db)
 {
     char buffer[4096];
     ssize_t bytes_read;
+    char command_buffer[8192] = {0}; // Larger buffer to handle fragmented commands
+    size_t command_len = 0;
 
     // Send welcome message
     const char *welcome = "+OK Connected to Key Value Store\r\n";
@@ -151,7 +156,6 @@ void handle_client(int client_socket, Database *db)
 
     while (1)
     {
-        // Clear buffer before each read
         memset(buffer, 0, sizeof(buffer));
 
         // Receive data
@@ -173,70 +177,160 @@ void handle_client(int client_socket, Database *db)
         // Null-terminate received data
         buffer[bytes_read] = '\0';
 
-        // Process command
-        process_client_command(client_socket, db, buffer);
+        // Append to command buffer
+        if (command_len + bytes_read >= sizeof(command_buffer))
+        {
+            // Buffer overflow protection
+            fprintf(stderr, "Command too large, truncating\n");
+            memcpy(command_buffer + command_len, buffer, sizeof(command_buffer) - command_len - 1);
+            command_buffer[sizeof(command_buffer) - 1] = '\0';
+            command_len = sizeof(command_buffer) - 1;
+        }
+        else
+        {
+            memcpy(command_buffer + command_len, buffer, bytes_read);
+            command_len += bytes_read;
+            command_buffer[command_len] = '\0';
+        }
+
+        // Process all complete commands in the buffer
+        while (1)
+        {
+            // Find a complete command
+            size_t complete_cmd_len = 0;
+            char *complete_cmd = find_complete_resp_command(command_buffer, &complete_cmd_len);
+
+            if (!complete_cmd || complete_cmd_len == 0)
+            {
+                // No complete command found, wait for more data
+                break;
+            }
+
+            // Create a temporary buffer to hold just this command
+            char *cmd_copy = (char *)malloc(complete_cmd_len + 1);
+            if (!cmd_copy)
+            {
+                fprintf(stderr, "Memory allocation failed\n");
+                break;
+            }
+
+            // Copy the command and ensure null termination
+            memcpy(cmd_copy, complete_cmd, complete_cmd_len);
+            cmd_copy[complete_cmd_len] = '\0';
+
+            // Process the complete command
+            process_client_command(client_socket, db, cmd_copy);
+            free(cmd_copy);
+
+            // Remove the processed command from the buffer
+            if (complete_cmd_len < command_len)
+            {
+                memmove(command_buffer, command_buffer + complete_cmd_len,
+                        command_len - complete_cmd_len);
+                command_len -= complete_cmd_len;
+                command_buffer[command_len] = '\0';
+            }
+            else
+            {
+                // All data processed
+                command_len = 0;
+                command_buffer[0] = '\0';
+                break;
+            }
+        }
     }
 }
 
 // Function to send response to client in Redis protocol format
 void send_response(int client_socket, const char *response)
 {
-    ssize_t sent = send(client_socket, response, strlen(response), 0);
-    if (sent < 0)
+    size_t total_bytes = strlen(response);
+    size_t bytes_sent = 0;
+
+    // Print debug info about what we're sending
+    printf("Sending response: '%s' (length: %zu)\n", response, total_bytes);
+
+    // Send data in chunks until everything is sent
+    while (bytes_sent < total_bytes)
     {
-        perror("Error sending response");
+        ssize_t result = send(client_socket, response + bytes_sent, total_bytes - bytes_sent, 0);
+
+        if (result < 0)
+        {
+            perror("Error sending response");
+            return;
+        }
+
+        bytes_sent += result;
     }
+
+    // Ensure all data is sent by flushing (optional)
+    // This is typically not needed with TCP sockets but adding for completeness
+    // int flag = 1;
+    // setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(int));
 }
 
 // Function to process commands received from client
 void process_client_command(int client_socket, Database *db, const char *command)
 {
+    printf("Received raw command: '%s'\n", command);
+
     // Parse the command (might be in RESP format)
     int resp_token_count = 0;
     char *parsed_command = parse_resp((char *)command, &resp_token_count);
 
     if (!parsed_command)
     {
+        printf("Failed to parse command\n");
         send_response(client_socket, "-ERR Invalid command format\r\n");
         return;
     }
 
+    printf("Parsed command: '%s', token count: %d\n", parsed_command, resp_token_count);
+
     // Remove trailing newline and carriage return
     char clean_command[4096];
-    strncpy(clean_command, parsed_command, sizeof(clean_command));
+    strncpy(clean_command, parsed_command, sizeof(clean_command) - 1);
+    clean_command[sizeof(clean_command) - 1] = '\0';
     clean_command[strcspn(clean_command, "\r\n")] = '\0';
 
-    // If we got the token count from RESP parsing, use it directly
-    int token_count = 0;
-    char **tokens;
+    printf("Clean command: '%s'\n", clean_command);
 
-    if (resp_token_count > 0)
-    {
-        // Tokenize command
-        tokens = tokenise_command(clean_command, &token_count);
-    }
-    else
-    {
-        // Tokenize command
-        tokens = tokenise_command(clean_command, &token_count);
-    }
+    // Tokenize command
+    int token_count = 0;
+    char **tokens = tokenise_command(clean_command, &token_count);
 
     free(parsed_command); // Free the parsed command
 
     if (token_count == 0)
     {
+        printf("No tokens found\n");
         send_response(client_socket, "-ERR Empty command\r\n");
+        free_tokens(tokens, token_count);
         return;
     }
 
+    printf("First token: '%s'\n", tokens[0]);
+
     // Process commands
     char response[4096];
+    memset(response, 0, sizeof(response));
 
     // Handle COMMAND queries (sent by Redis clients to discover commands)
     if (strcasecmp(tokens[0], "COMMAND") == 0)
     {
-        // Send empty array response for simplicity
-        send_response(client_socket, "*0\r\n");
+        // For COMMAND DOCS, return an array of command info
+        if (token_count > 1 && strcasecmp(tokens[1], "DOCS") == 0)
+        {
+            // Just sending a simple array to make redis-cli happy
+            snprintf(response, sizeof(response), "*3\r\n$3\r\nSET\r\n$3\r\nGET\r\n$3\r\nDEL\r\n");
+            send_response(client_socket, response);
+        }
+        else
+        {
+            // Basic response for COMMAND
+            send_response(client_socket, "*0\r\n");
+        }
     }
     else if (strcasecmp(tokens[0], "SET") == 0)
     {
@@ -247,7 +341,7 @@ void process_client_command(int client_socket, Database *db, const char *command
         else
         {
             set_command(db, tokens[1], tokens[2]);
-            send_response(client_socket, response);
+            send_response(client_socket, "+OK\r\n");
         }
     }
     else if (strcasecmp(tokens[0], "GET") == 0)
@@ -261,6 +355,7 @@ void process_client_command(int client_socket, Database *db, const char *command
             char *value = get_command(db, tokens[1]);
             if (value)
             {
+                memset(response, 0, sizeof(response));
                 snprintf(response, sizeof(response), "$%zu\r\n%s\r\n", strlen(value), value);
                 send_response(client_socket, response);
             }
@@ -317,6 +412,7 @@ void process_client_command(int client_socket, Database *db, const char *command
             int new_value;
             if (incr_command(db, tokens[1], &new_value))
             {
+                memset(response, 0, sizeof(response));
                 snprintf(response, sizeof(response), ":%d\r\n", new_value);
                 send_response(client_socket, response);
             }
@@ -337,6 +433,7 @@ void process_client_command(int client_socket, Database *db, const char *command
             int new_value;
             if (decr_command(db, tokens[1], &new_value))
             {
+                memset(response, 0, sizeof(response));
                 snprintf(response, sizeof(response), ":%d\r\n", new_value);
                 send_response(client_socket, response);
             }
@@ -386,14 +483,16 @@ void process_client_command(int client_socket, Database *db, const char *command
     else if (strcasecmp(tokens[0], "PING") == 0)
     {
         const char *pong = (token_count == 2) ? tokens[1] : "PONG";
+        memset(response, 0, sizeof(response));
         snprintf(response, sizeof(response), "+%s\r\n", pong);
         send_response(client_socket, response);
     }
     // Simple command to get server info
     else if (strcasecmp(tokens[0], "INFO") == 0)
     {
-        snprintf(response, sizeof(response), "$%zu\r\n# Server\r\nkey_value_store_version:1.0\r\nprotocol_version:1.0\r\n\r\n",
-                 strlen("# Server\r\nkey_value_store_version:1.0\r\nprotocol_version:1.0\r\n"));
+        const char *info_text = "# Server\r\nkey_value_store_version:1.0\r\nprotocol_version:1.0\r\n";
+        memset(response, 0, sizeof(response));
+        snprintf(response, sizeof(response), "$%zu\r\n%s\r\n", strlen(info_text), info_text);
         send_response(client_socket, response);
     }
     // Command to exit
@@ -401,11 +500,11 @@ void process_client_command(int client_socket, Database *db, const char *command
     {
         send_response(client_socket, "+OK\r\n");
         free_tokens(tokens, token_count);
-        close(client_socket);
         return;
     }
     else
     {
+        memset(response, 0, sizeof(response));
         snprintf(response, sizeof(response), "-ERR Unknown command '%s'\r\n", tokens[0]);
         send_response(client_socket, response);
     }

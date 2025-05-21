@@ -1,13 +1,18 @@
 #include "../include/persistence.h"
+#include "../include/database.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <errno.h>
 
 // Save command implementation
 bool save_command(Database *db, const char *filename)
 {
-    FILE *file = fopen(filename, "wb");
+    if (!db || !filename)
+        return false;
+
+    FILE *file = fopen(filename, "w");
 
     if (!file)
     {
@@ -64,7 +69,10 @@ bool save_command(Database *db, const char *filename)
 // LOAD command implementation
 bool load_command(Database *db, const char *filename)
 {
-    FILE *file = fopen(filename, "rb");
+     if (!db || !filename)
+        return false;
+
+    FILE *file = fopen(filename, "r");
     if (!file)
     {
         fprintf(stderr, "Failed to open file %s for reading: %s\n", filename, strerror(errno));
