@@ -17,7 +17,7 @@ void handle_client(int client_socket, Database *db);
 // Function to process commands received from client
 void process_client_command(int client_socket, Database *db, const char *command);
 
-void send_response(int client_socket, const char *response);
-char *find_complete_resp_command(const char *buffer, size_t *command_length);
+// Function to send response to client
+void send_response_debug(int client_socket, const char *response);
 
 #endif /* SERVER_H */

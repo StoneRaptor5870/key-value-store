@@ -20,10 +20,18 @@ void free_tokens(char **tokens, int count)
     free(tokens);
 }
 
-// Tokenise command string into array of strings
+// Tokenise command string into array of strings (for regular commands, not RESP)
 char **tokenise_command(const char *command, int *token_count)
 {
+    printf("DEBUG: tokenise_command called with: '%.100s'\n", command ? command : "NULL");
+
     *token_count = 0;
+
+    if (!command || !*command)
+    {
+        printf("DEBUG: tokenise_command - empty command\n");
+        return NULL;
+    }
 
     // Count tokens
     bool in_token = false;
@@ -32,7 +40,7 @@ char **tokenise_command(const char *command, int *token_count)
 
     while (*p)
     {
-        if (*p == '"')
+        if (*p == '"' && (p == command || p[-1] != '\\'))
         {
             in_quotes = !in_quotes;
         }
@@ -55,12 +63,24 @@ char **tokenise_command(const char *command, int *token_count)
         p++;
     }
 
+    printf("DEBUG: tokenise_command - found %d tokens\n", *token_count);
+
+    if (*token_count == 0)
+        return NULL;
+
     // Allocate token array
     char **tokens = (char **)malloc(sizeof(char *) * (*token_count));
     if (!tokens)
     {
-        fprintf(stderr, "Failed to allocate memory for tokens\n");
-        exit(EXIT_FAILURE);
+        printf("DEBUG: tokenise_command - failed to allocate tokens array\n");
+        *token_count = 0;
+        return NULL;
+    }
+
+    // Initialize all pointers to NULL for safe cleanup
+    for (int i = 0; i < *token_count; i++)
+    {
+        tokens[i] = NULL;
     }
 
     // Parse tokens
@@ -70,22 +90,23 @@ char **tokenise_command(const char *command, int *token_count)
     int token_index = 0;
     const char *token_start = NULL;
 
-    while (1)
+    while (*p && token_index < *token_count)
     {
-        if (*p == '"')
+        if (*p == '"' && (p == command || p[-1] != '\\'))
         {
             in_quotes = !in_quotes;
         }
 
-        if (*p == '\0' || (!in_quotes && isspace(*p)))
+        if (!in_quotes && isspace(*p))
         {
             if (in_token)
             {
                 in_token = false;
                 int token_len = p - token_start;
-                if (token_start[0] == '"' && p[-1] == '"')
+
+                // Handle quoted strings
+                if (token_start[0] == '"' && p > token_start && p[-1] == '"')
                 {
-                    // Remove quotes
                     token_start++;
                     token_len -= 2;
                 }
@@ -93,18 +114,18 @@ char **tokenise_command(const char *command, int *token_count)
                 tokens[token_index] = (char *)malloc(token_len + 1);
                 if (!tokens[token_index])
                 {
-                    fprintf(stderr, "Failed to allocate memory for token\n");
-                    exit(EXIT_FAILURE);
+                    printf("DEBUG: tokenise_command - failed to allocate token %d\n", token_index);
+                    // Cleanup on failure
+                    free_tokens(tokens, *token_count);
+                    *token_count = 0;
+                    return NULL;
                 }
 
                 strncpy(tokens[token_index], token_start, token_len);
                 tokens[token_index][token_len] = '\0';
-                token_index++;
-            }
 
-            if (*p == '\0')
-            {
-                break;
+                printf("DEBUG: tokenise_command - token %d: '%s'\n", token_index, tokens[token_index]);
+                token_index++;
             }
         }
         else
@@ -118,290 +139,341 @@ char **tokenise_command(const char *command, int *token_count)
         p++;
     }
 
+    // Handle the last token if we're still in one
+    if (in_token && token_index < *token_count)
+    {
+        int token_len = p - token_start;
+
+        // Handle quoted strings
+        if (token_start[0] == '"' && p > token_start && p[-1] == '"')
+        {
+            token_start++;
+            token_len -= 2;
+        }
+
+        tokens[token_index] = (char *)malloc(token_len + 1);
+        if (!tokens[token_index])
+        {
+            printf("DEBUG: tokenise_command - failed to allocate token %d\n", token_index);
+            // Cleanup on failure
+            free_tokens(tokens, *token_count);
+            *token_count = 0;
+            return NULL;
+        }
+
+        strncpy(tokens[token_index], token_start, token_len);
+        tokens[token_index][token_len] = '\0';
+
+        printf("DEBUG: tokenise_command - token %d: '%s'\n", token_index, tokens[token_index]);
+        token_index++;
+    }
+
+    printf("DEBUG: tokenise_command - successfully parsed %d tokens\n", token_index);
     return tokens;
 }
 
 // Function to find first complete RESP command in a buffer
-char *find_complete_resp_command(const char *buffer, size_t *command_length)
+char *find_complete_resp_command(const char *buffer, size_t buffer_len, size_t *command_length)
 {
     *command_length = 0;
 
-    if (!buffer || !*buffer)
-    {
+    if (!buffer || buffer_len == 0)
         return NULL;
-    }
 
-    // If not a RESP array, look for CRLF as terminator
-    if (buffer[0] != '*')
+    // Handle inline commands (non-RESP) - look for CRLF
+    if (buffer[0] != '*' && buffer[0] != '$' && buffer[0] != '+' &&
+        buffer[0] != '-' && buffer[0] != ':')
     {
-        char *crlf = strstr(buffer, "\r\n");
-        if (!crlf)
+        for (size_t i = 0; i < buffer_len - 1; i++)
         {
-            return NULL; // No complete command yet
+            if (buffer[i] == '\r' && buffer[i + 1] == '\n')
+            {
+                *command_length = i + 2;
+                return (char *)buffer;
+            }
         }
-        *command_length = (crlf - buffer) + 2;
-        return (char *)buffer;
+        return NULL; // No complete command yet
     }
 
-    // Parse array size
-    int array_size = atoi(buffer + 1);
-    if (array_size <= 0)
+    // Handle RESP array commands
+    if (buffer[0] == '*')
     {
-        // Invalid array size, treat as non-RESP
-        char *crlf = strstr(buffer, "\r\n");
-        if (!crlf)
+        // Find first CRLF to get array size
+        size_t first_crlf = 0;
+        bool found_crlf = false;
+
+        for (size_t i = 0; i < buffer_len - 1; i++)
         {
+            if (buffer[i] == '\r' && buffer[i + 1] == '\n')
+            {
+                first_crlf = i;
+                found_crlf = true;
+                break;
+            }
+        }
+
+        if (!found_crlf)
             return NULL;
+
+        // Parse array size
+        char size_str[16];
+        size_t size_len = first_crlf - 1;
+        if (size_len >= sizeof(size_str))
+            return NULL; // Array size too long
+
+        strncpy(size_str, buffer + 1, size_len);
+        size_str[size_len] = '\0';
+
+        int array_size = atoi(size_str);
+        if (array_size <= 0)
+            return NULL;
+
+        size_t pos = first_crlf + 2; // Start after first CRLF
+
+        // Process each element in the array
+        for (int i = 0; i < array_size; i++)
+        {
+            if (pos >= buffer_len)
+                return NULL; // Not enough data
+
+            // Each element should be a bulk string starting with $
+            if (buffer[pos] != '$')
+                return NULL;
+
+            // Find the CRLF after the length
+            size_t length_end = 0;
+            bool found_length_crlf = false;
+
+            for (size_t j = pos; j < buffer_len - 1; j++)
+            {
+                if (buffer[j] == '\r' && buffer[j + 1] == '\n')
+                {
+                    length_end = j;
+                    found_length_crlf = true;
+                    break;
+                }
+            }
+
+            if (!found_length_crlf)
+                return NULL;
+
+            // Parse string length
+            char len_str[16];
+            size_t len_str_len = length_end - pos - 1;
+            if (len_str_len >= sizeof(len_str))
+                return NULL;
+
+            strncpy(len_str, buffer + pos + 1, len_str_len);
+            len_str[len_str_len] = '\0';
+
+            int str_len = atoi(len_str);
+            if (str_len < 0)
+                return NULL;
+
+            pos = length_end + 2; // Move past length CRLF
+
+            // Check if we have enough data for the string content + CRLF
+            if (pos + str_len + 2 > buffer_len)
+                return NULL;
+
+            // Verify the string ends with CRLF
+            if (buffer[pos + str_len] != '\r' || buffer[pos + str_len + 1] != '\n')
+                return NULL;
+
+            pos += str_len + 2; // Move past string content and CRLF
         }
-        *command_length = (crlf - buffer) + 2;
+
+        *command_length = pos;
         return (char *)buffer;
     }
 
-    // Find the end of the array size line
-    char *current = strstr(buffer, "\r\n");
-    if (!current)
+    // Handle other RESP types (simple strings, errors, integers, bulk strings)
+    for (size_t i = 0; i < buffer_len - 1; i++)
     {
-        return NULL;
-    }
-    current += 2; // Move past \r\n
-
-    // Process each bulk string in the array
-    for (int i = 0; i < array_size; i++)
-    {
-        // Check if we have enough data
-        if (*current == '\0')
+        if (buffer[i] == '\r' && buffer[i + 1] == '\n')
         {
-            return NULL; // Incomplete command
+            *command_length = i + 2;
+            return (char *)buffer;
         }
-
-        // Check if this is a bulk string
-        if (current[0] != '$')
-        {
-            return NULL; // Invalid format
-        }
-
-        // Find the end of the length line
-        char *line_end = strstr(current, "\r\n");
-        if (!line_end)
-        {
-            return NULL; // Incomplete command
-        }
-
-        // Parse string length
-        int str_len = atoi(current + 1);
-        if (str_len < 0)
-        {
-            return NULL; // Invalid string length
-        }
-
-        current = line_end + 2; // Move past \r\n
-
-        // Make sure we have the full string data
-        if (strlen(current) < (size_t)(str_len + 2))
-        {
-            return NULL; // Not enough data for string content
-        }
-
-        current += str_len + 2; // Move past string content and \r\n
     }
 
-    // We've processed the entire command
-    *command_length = current - buffer;
-    return (char *)buffer;
+    return NULL;
 }
 
 // RESP protocol parsing
-char *parse_resp(char *input, int *token_count)
+char *parse_resp(const char *input, size_t input_len, int *token_count)
 {
     *token_count = 0;
 
-    // Check if input is empty
-    if (!input || !*input)
-    {
-        printf("RESP parser: Empty input\n");
-        return strdup("");
-    }
+    if (!input || input_len == 0)
+        return NULL;
 
-    // Print input for debugging
-    printf("RESP parser input: '%.*s%s'\n",
-           (int)(strlen(input) > 50 ? 50 : strlen(input)),
-           input,
-           strlen(input) > 50 ? "...'" : "'");
-
-    // Check if this is a RESP array message (starts with *)
+    // Handle inline commands (non-RESP)
     if (input[0] != '*')
     {
-        printf("RESP parser: Not a RESP array, using as-is\n");
-        return strdup(input);
+        // Find the end of the command (CRLF or end of string)
+        size_t cmd_len = 0;
+        for (size_t i = 0; i < input_len; i++)
+        {
+            if (input[i] == '\r' || input[i] == '\n' || input[i] == '\0')
+            {
+                cmd_len = i;
+                break;
+            }
+        }
+        if (cmd_len == 0)
+            cmd_len = input_len;
+
+        char *result = malloc(cmd_len + 1);
+        if (!result)
+            return NULL;
+
+        strncpy(result, input, cmd_len);
+        result[cmd_len] = '\0';
+
+        *token_count = 1; // Approximate - will be tokenized later
+        return result;
     }
+
+    // Parse RESP array
+    // Find first CRLF
+    size_t first_crlf = 0;
+    for (size_t i = 0; i < input_len - 1; i++)
+    {
+        if (input[i] == '\r' && input[i + 1] == '\n')
+        {
+            first_crlf = i;
+            break;
+        }
+    }
+
+    if (first_crlf == 0)
+        return NULL;
 
     // Parse array size
     int array_size = atoi(input + 1);
     if (array_size <= 0)
-    {
-        printf("RESP parser: Invalid array size: %d\n", array_size);
-        return strdup(input); // Return original if invalid array size
-    }
+        return NULL;
 
-    printf("RESP parser: Array size: %d\n", array_size);
+    // Allocate array to store parsed elements
+    char **elements = malloc(sizeof(char *) * array_size);
+    if (!elements)
+        return NULL;
 
-    // Allocate memory for all parts
-    char **parts = malloc(sizeof(char *) * array_size);
-    if (!parts)
-    {
-        printf("RESP parser: Memory allocation failed\n");
-        return strdup(input); // Return original if memory allocation fails
-    }
-
-    // Find the end of the first line
-    char *line_end = strstr(input, "\r\n");
-    if (!line_end)
-    {
-        printf("RESP parser: No CRLF found in initial array marker\n");
-        free(parts);
-        return strdup(input); // Return original if format is wrong
-    }
-
-    char *current = line_end + 2; // Move past \r\n
-
-    // Parse each bulk string in the array
+    // Initialize all pointers for safe cleanup
     for (int i = 0; i < array_size; i++)
     {
-        // Check if we have enough data
-        if (*current == '\0')
+        elements[i] = NULL;
+    }
+
+    size_t pos = first_crlf + 2;
+    bool parse_error = false;
+
+    // Parse each bulk string
+    for (int i = 0; i < array_size && !parse_error; i++)
+    {
+        if (pos >= input_len || input[pos] != '$')
         {
-            printf("RESP parser: Unexpected end of input at item %d\n", i);
-            // Cleanup already allocated parts
-            for (int j = 0; j < i; j++)
-            {
-                free(parts[j]);
-            }
-            free(parts);
-            return strdup(input);
+            parse_error = true;
+            break;
         }
 
-        // Check if this is a bulk string
-        if (current[0] != '$')
+        // Find length CRLF
+        size_t length_crlf = 0;
+        bool found = false;
+        for (size_t j = pos; j < input_len - 1; j++)
         {
-            printf("RESP parser: Expected bulk string '$' at item %d, got '%c'\n", i, current[0]);
-            // Cleanup already allocated parts
-            for (int j = 0; j < i; j++)
+            if (input[j] == '\r' && input[j + 1] == '\n')
             {
-                free(parts[j]);
+                length_crlf = j;
+                found = true;
+                break;
             }
-            free(parts);
-            return strdup(input); // Return original if format is wrong
         }
 
-        // Parse string length
-        int str_len = atoi(current + 1);
+        if (!found)
+        {
+            parse_error = true;
+            break;
+        }
+
+        int str_len = atoi(input + pos + 1);
         if (str_len < 0)
         {
-            printf("RESP parser: Invalid string length: %d at item %d\n", str_len, i);
-            // Cleanup
-            for (int j = 0; j < i; j++)
-            {
-                free(parts[j]);
-            }
-            free(parts);
-            return strdup(input); // Return original if invalid length
+            parse_error = true;
+            break;
         }
 
-        printf("RESP parser: Item %d has length %d\n", i, str_len);
+        pos = length_crlf + 2;
 
-        // Find the end of the length line
-        line_end = strstr(current, "\r\n");
-        if (!line_end)
+        if (pos + str_len + 2 > input_len)
         {
-            printf("RESP parser: No CRLF found after string length at item %d\n", i);
-            // Cleanup
-            for (int j = 0; j < i; j++)
-            {
-                free(parts[j]);
-            }
-            free(parts);
-            return strdup(input); // Return original if format is wrong
+            parse_error = true;
+            break;
         }
 
-        current = line_end + 2; // Move past \r\n
-
-        // Allocate memory for the string and copy it
-        parts[i] = malloc(str_len + 1);
-        if (!parts[i])
+        elements[i] = malloc(str_len + 1);
+        if (!elements[i])
         {
-            printf("RESP parser: Memory allocation failed for item %d\n", i);
-            // Cleanup
-            for (int j = 0; j < i; j++)
-            {
-                free(parts[j]);
-            }
-            free(parts);
-            return strdup(input); // Return original if memory allocation fails
+            parse_error = true;
+            break;
         }
 
-        // Check if we have enough data left
-        if (strlen(current) < (size_t)(str_len + 2))
-        {
-            printf("RESP parser: Not enough data for string content at item %d\n", i);
-            // Cleanup
-            for (int j = 0; j <= i; j++)
-            {
-                free(parts[j]);
-            }
-            free(parts);
-            return strdup(input); // Return original if not enough data
-        }
+        memcpy(elements[i], input + pos, str_len);
+        elements[i][str_len] = '\0';
 
-        memcpy(parts[i], current, str_len);
-        parts[i][str_len] = '\0'; // Null-terminate the string
-
-        printf("RESP parser: Item %d content: '%s'\n", i, parts[i]);
-
-        current += str_len + 2; // Move past string and \r\n
+        pos += str_len + 2;
     }
 
-    // Convert the array of strings to a single space-separated command string
-    size_t total_len = 0;
+    // Handle parsing errors - cleanup
+    if (parse_error)
+    {
+        for (int i = 0; i < array_size; i++)
+        {
+            free(elements[i]);
+        }
+        free(elements);
+        return NULL;
+    }
+
+    // Calculate total length needed for result
+    size_t total_len = 1; // For null terminator
     for (int i = 0; i < array_size; i++)
     {
-        total_len += strlen(parts[i]) + 1; // +1 for space or null terminator
+        total_len += strlen(elements[i]);
+        if (i > 0)
+            total_len += 1; // Space separator
     }
 
     char *result = malloc(total_len);
     if (!result)
     {
-        printf("RESP parser: Memory allocation failed for result\n");
         // Cleanup
         for (int i = 0; i < array_size; i++)
         {
-            free(parts[i]);
+            free(elements[i]);
         }
-        free(parts);
-        return strdup(input); // Return original if memory allocation fails
+        free(elements);
+        return NULL;
     }
 
-    result[0] = '\0'; // Initialize empty string
-
+    // Build result string
+    result[0] = '\0';
     for (int i = 0; i < array_size; i++)
     {
         if (i > 0)
-        {
             strcat(result, " ");
-        }
-        strcat(result, parts[i]);
+        strcat(result, elements[i]);
     }
 
-    printf("RESP parser: Final result: '%s'\n", result);
-
-    // Set the token count to the array size
     *token_count = array_size;
 
-    // Cleanup
+    // Cleanup elements array
     for (int i = 0; i < array_size; i++)
     {
-        free(parts[i]);
+        free(elements[i]);
     }
-    free(parts);
+    free(elements);
 
     return result;
 }
