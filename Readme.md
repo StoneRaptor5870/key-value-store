@@ -1,40 +1,101 @@
-Key Value Store
+# Key-Value Store with TCP Server
 
-File Organisation
+A simple key-value store with both CLI and TCP server functionality.
 
-```
-key-value-store/
-├── include/
-│   ├── database.h      # Database structure and core operations
-│   ├── commands.h      # KV Store command implementations
-│   ├── utils.h         # Utility functions (tokeniser, etc.)
-│   └── persistence.h   # Save/load functionality
-├── src/
-│   ├── database.c      # Implementation of database functions
-│   ├── commands.c      # Implementation of KV Store commands
-│   ├── utils.c         # Implementation of utility functions
-│   ├── persistence.c   # Implementation of save/load functions
-│   └── main.c          # Main program entry point
-└── Makefile            # Build configuration
-```
+## Features
 
-```
-Design Principles
+- In-memory key-value database
+- Command Line Interface (CLI) for direct interaction
+- TCP server for remote connections
+- Redis-compatible protocol
+- Basic key operations: SET, GET, DEL, EXISTS
+- Integer operations: INCR, DECR
+- Persistence: SAVE, LOAD
+- Compatible with Redis clients
 
-Separation of Concerns: Each module has a clear responsibility
-Encapsulation: The database is encapsulated for easier maintenance
-Modularity: Components can be modified independently
-Reusability: Core functionality can be reused in other projects
-```
+## Building
 
-Build Instructions
-
-To build the project:
-```
+```bash
 make
 ```
 
-To clean build artifacts:
+The executable will be built in the `bin` directory.
+
+## Usage
+
+### Server Mode (Default)
+
+```bash
+bin/kv-store
 ```
-make clean
+
+This will start the server on the default port (8520).
+
+You can specify a different port:
+
+```bash
+bin/kv-store -p 7000
+```
+
+### Interactive Mode (CLI)
+
+```bash
+bin/kv-store -i
+```
+
+### Loading a Database at Startup
+
+```bash
+bin/kv-store -f filename
+```
+
+### Command Line Help
+
+```bash
+bin/kv-store -h
+```
+
+## Available Commands
+
+### Basic Commands
+
+- `SET key value` - Set key to hold string value
+- `GET key` - Get the value of key
+- `DEL key` - Delete key
+- `EXISTS key` - Check if key exists
+- `INCR key` - Increment the integer value of key by one
+- `DECR key` - Decrement the integer value of key by one
+
+### Persistence Commands
+
+- `SAVE filename` - Save the database to a file
+- `LOAD filename` - Load the database from a file
+
+### Server Commands
+
+- `INFO` - Get server information
+- `PING` - Test connection (returns PONG)
+- `QUIT` or `EXIT` - Close the connection
+
+## Connecting with Redis Clients
+
+You can connect to the server using any Redis client. For example, using the redis-cli:
+
+```bash
+redis-cli -p 8520
+```
+
+Then you can use all the supported commands:
+
+```
+127.0.0.1:8520> SET mykey "Hello, World!"
+OK
+127.0.0.1:8520> GET mykey
+"Hello, World!"
+127.0.0.1:8520> EXISTS mykey
+(integer) 1
+127.0.0.1:8520> DEL mykey
+(integer) 1
+127.0.0.1:8520> PING
+PONG
 ```
