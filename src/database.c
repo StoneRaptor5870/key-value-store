@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 static char *my_strdup(const char *s)
 {
@@ -120,6 +121,7 @@ void db_set(Database *db, const char *key, const char *value)
         return;
     }
 
+    new_entry->expiration = 0; // No expiration by default
     new_entry->next = db->hash_table[index];
     db->hash_table[index] = new_entry;
 }
@@ -137,6 +139,13 @@ char *db_get(Database *db, const char *key)
     {
         if (strcmp(current->key, key) == 0)
         {
+            // Check if entry is expired
+            if (db_is_expired(current))
+            {
+                // Entry is expired, remove it and return NULL
+                db_delete(db, key);
+                return NULL;
+            }
             return current->value;
         }
         current = current->next;
@@ -183,6 +192,127 @@ bool db_delete(Database *db, const char *key)
         }
 
         prev = current;
+        current = current->next;
+    }
+
+    return false; // Key not found
+}
+
+// Check if an entry is expired
+bool db_is_expired(Entry *entry)
+{
+    if (!entry || entry->expiration == 0)
+    {
+        return false;
+    }
+
+    return time(NULL) >= entry->expiration;
+}
+
+// Clean up expired entries from the database
+void db_cleanup_expired(Database *db)
+{
+    if (!db)
+        return;
+
+    time_t current_time = time(NULL);
+
+    for (int i = 0; i < HASH_TABLE_SIZE; i++)
+    {
+        Entry *current = db->hash_table[i];
+        Entry *prev = NULL;
+
+        while (current)
+        {
+            Entry *next = current->next;
+
+            if (current->expiration != 0 && current_time >= current->expiration)
+            {
+                // Remove expired entry
+                if (prev)
+                {
+                    prev->next = current->next;
+                }
+                else
+                {
+                    db->hash_table[i] = current->next;
+                }
+
+                free(current->key);
+                free(current->value);
+                free(current);
+            }
+            else
+            {
+                prev = current;
+            }
+
+            current = next;
+        }
+    }
+}
+
+// Set expiration time for a key
+void db_set_expiration(Database *db, const char *key, time_t expiration)
+{
+    if (!db || !key)
+        return;
+
+    unsigned int index = hash(key);
+
+    Entry *current = db->hash_table[index];
+
+    while (current)
+    {
+        if (strcmp(current->key, key) == 0)
+        {
+            current->expiration = expiration;
+            return;
+        }
+        current = current->next;
+    }
+}
+
+// Get expiration time for a key
+time_t db_get_expiration(Database *db, const char *key)
+{
+    if (!db || !key)
+        return 0;
+
+    unsigned int index = hash(key);
+
+    Entry *current = db->hash_table[index];
+    while (current)
+    {
+        if (strcmp(current->key, key) == 0)
+        {
+            return current->expiration;
+        }
+        current = current->next;
+    }
+
+    return 0; // Key not found
+}
+
+bool db_remove_expiration(Database *db, const char *key)
+{
+    if (!db || !key)
+        return false;
+
+    unsigned int index = hash(key);
+
+    Entry *current = db->hash_table[index];
+    while (current)
+    {
+        if (strcmp(current->key, key) == 0)
+        {
+            if (current->expiration != 0)
+            {
+                current->expiration = 0;
+                return true;
+            }
+            return false; // Key exists but has no expiration
+        }
         current = current->next;
     }
 

@@ -465,14 +465,17 @@ void process_client_command(int client_socket, Database *db, const char *command
         {
             // Return array of supported commands
             const char *command_list =
-                "*7\r\n"
+                "*10\r\n"
                 "$3\r\nSET\r\n"
                 "$3\r\nGET\r\n"
                 "$3\r\nDEL\r\n"
                 "$6\r\nEXISTS\r\n"
                 "$4\r\nINCR\r\n"
                 "$4\r\nDECR\r\n"
-                "$4\r\nPING\r\n";
+                "$4\r\nPING\r\n"
+                "$6\r\nEXPIRE\r\n"
+                "$3\r\nTTL\r\n"
+                "$7\r\nPERSIST\r\n";
             send_response_debug(client_socket, command_list);
         }
     }
@@ -577,6 +580,54 @@ void process_client_command(int client_socket, Database *db, const char *command
             {
                 send_response_debug(client_socket, "-ERR value is not an integer or out of range\r\n");
             }
+        }
+    }
+    else if (strcasecmp(tokens[0], "EXPIRE") == 0)
+    {
+        printf("DEBUG: Processing EXPIRE\n");
+        if (token_count != 3)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'expire' command\r\n");
+        }
+        else
+        {
+            int seconds = atoi(tokens[2]);
+            if (seconds < 0)
+            {
+                send_response_debug(client_socket, "-ERR invalid expire time\r\n");
+            }
+            else
+            {
+                bool result = expire_command(db, tokens[1], seconds);
+                send_response_debug(client_socket, result ? ":1\r\n" : ":0\r\n");
+            }
+        }
+    }
+    else if (strcasecmp(tokens[0], "TTL") == 0)
+    {
+        printf("DEBUG: Processing TTL\n");
+        if (token_count != 2)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'ttl' command\r\n");
+        }
+        else
+        {
+            int ttl = ttl_command(db, tokens[1]);
+            snprintf(response, sizeof(response), ":%d\r\n", ttl);
+            send_response_debug(client_socket, response);
+        }
+    }
+    else if (strcasecmp(tokens[0], "PERSIST") == 0)
+    {
+        printf("DEBUG: Processing PERSIST\n");
+        if (token_count != 2)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'persist' command\r\n");
+        }
+        else
+        {
+            bool result = persist_command(db, tokens[1]);
+            send_response_debug(client_socket, result ? ":1\r\n" : ":0\r\n");
         }
     }
     else if (strcasecmp(tokens[0], "SAVE") == 0)

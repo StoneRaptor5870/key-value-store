@@ -220,6 +220,62 @@ int main(int argc, char *argv[])
                     }
                 }
             }
+            else if (strcasecmp(tokens[0], "EXPIRE") == 0)
+            {
+                if (token_count != 3)
+                {
+                    printf("(error) Wrong number of arguments for 'EXPIRE' command\n");
+                }
+                else
+                {
+                    int seconds = atoi(tokens[2]);
+                    if (seconds < 0)
+                    {
+                        printf("(error) Invalid expire time\n");
+                    }
+                    else
+                    {
+                        if (expire_command(db, tokens[1], seconds))
+                        {
+                            printf("(integer) 1\n");
+                        }
+                        else
+                        {
+                            printf("(integer) 0\n");
+                        }
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "TTL") == 0)
+            {
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'TTL' command\n");
+                }
+                else
+                {
+                    int ttl = ttl_command(db, tokens[1]);
+                    printf("(integer) %d\n", ttl);
+                }
+            }
+            else if (strcasecmp(tokens[0], "PERSIST") == 0)
+            {
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'PERSIST' command\n");
+                }
+                else
+                {
+                    if (persist_command(db, tokens[1]))
+                    {
+                        printf("(integer) 1\n");
+                    }
+                    else
+                    {
+                        printf("(integer) 0\n");
+                    }
+                }
+            }
             else if (strcasecmp(tokens[0], "SAVE") == 0)
             {
                 if (token_count != 2)

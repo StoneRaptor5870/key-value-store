@@ -97,6 +97,71 @@ bool decr_command(Database *db, const char *key, int *new_value)
     return true;
 }
 
+// EXPIRE command implementation - Set key to expire in N seconds
+bool expire_command(Database *db, const char *key, int seconds)
+{
+    if (!db || !key || seconds < 0)
+    {
+        return false;
+    }
+
+    // Check if key exists first
+    if (!db_exists(db, key))
+        return false;
+
+    // Calculate expiration time
+    time_t expiration_time = time(NULL) + seconds;
+
+    // Set the expiration
+    db_set_expiration(db, key, expiration_time);
+
+    return true;
+}
+
+int ttl_command(Database *db, const char *key)
+{
+    if (!db || !key)
+        return -2; // Error case
+
+    // Check if key exists
+    if (!db_exists(db, key))
+        return -2; // Key doesn't exist
+
+    // Get expiration time
+    time_t expiration = db_get_expiration(db, key);
+
+    if (expiration == 0)
+        return -1; // Key exists but has no expiration
+
+    // Calculate remaining time
+    time_t current_time = time(NULL);
+    int ttl = (int)(expiration - current_time);
+
+    // If TTL is negative or zero, the key has expired
+    if (ttl <= 0)
+    {
+        // Clean up expired key
+        db_delete(db, key);
+        return -2; // Key has expired (doesn't exist anymore)
+    }
+
+    return ttl;
+}
+
+// PERSIST command implementation - Remove expiration from a key
+bool persist_command(Database *db, const char *key)
+{
+    if (!db || !key)
+        return false;
+
+    // Check if key exists
+    if (!db_exists(db, key))
+        return false;
+
+    // Remove expiration
+    return db_remove_expiration(db, key);
+}
+
 // Display help information
 void print_help()
 {
@@ -107,6 +172,9 @@ void print_help()
     printf("  EXISTS key          - Check if key exists\n");
     printf("  INCR key            - Increment the integer value of key by one\n");
     printf("  DECR key            - Decrement the integer value of key by one\n");
+    printf("  EXPIRE key seconds  - Set key to expire in N seconds\n");
+    printf("  TTL key             - Get remaining time to live for a key\n");
+    printf("  PERSIST key         - Remove expiration from a key\n");
     printf("  SAVE filename       - Save the database to a file\n");
     printf("  LOAD filename       - Load the database from a file\n");
     printf("  HELP                - Show this help message\n");

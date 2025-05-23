@@ -10,6 +10,7 @@ A simple key-value store with both CLI and TCP server functionality.
 - Redis-compatible protocol
 - Basic key operations: SET, GET, DEL, EXISTS
 - Integer operations: INCR, DECR
+- Key expiry & TTL operations: EXPIRE, TTL, PERSIST
 - Persistence: SAVE, LOAD
 - Compatible with Redis clients
 
@@ -65,6 +66,12 @@ bin/kv-store -h
 - `EXISTS key` - Check if key exists
 - `INCR key` - Increment the integer value of key by one
 - `DECR key` - Decrement the integer value of key by one
+
+### Key Expiry & TTL Commands
+
+- `EXPIRE key time` - Set a key to expire in N seconds
+- `TTL key` - Get remaining time to live
+- `PERSIST key` - Remove expiration from a key
 
 ### Persistence Commands
 
