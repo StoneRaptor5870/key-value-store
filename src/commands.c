@@ -118,6 +118,7 @@ bool expire_command(Database *db, const char *key, int seconds)
     return true;
 }
 
+// TTL comamnd implementation - Gets the remaining time for the key
 int ttl_command(Database *db, const char *key)
 {
     if (!db || !key)
@@ -162,24 +163,61 @@ bool persist_command(Database *db, const char *key)
     return db_remove_expiration(db, key);
 }
 
+// List command implementations
+bool lpush_command(Database *db, const char *key, const char *value)
+{
+    return db_lpush(db, key, value);
+}
+
+bool rpush_command(Database *db, const char *key, const char *value)
+{
+    return db_rpush(db, key, value);
+}
+
+char *lpop_command(Database *db, const char *key)
+{
+    return db_lpop(db, key);
+}
+
+char *rpop_command(Database *db, const char *key)
+{
+    return db_rpop(db, key);
+}
+
+char **lrange_command(Database *db, const char *key, int start, int stop, int *count)
+{
+    return db_lrange(db, key, start, stop, count);
+}
+
+int llen_command(Database *db, const char *key)
+{
+    return db_llen(db, key);
+}
+
 // Display help information
 void print_help()
 {
     printf("Available commands:\n");
-    printf("  SET key value       - Set key to hold string value\n");
-    printf("  GET key             - Get the value of key\n");
-    printf("  DEL key             - Delete key\n");
-    printf("  EXISTS key          - Check if key exists\n");
-    printf("  INCR key            - Increment the integer value of key by one\n");
-    printf("  DECR key            - Decrement the integer value of key by one\n");
-    printf("  EXPIRE key seconds  - Set key to expire in N seconds\n");
-    printf("  TTL key             - Get remaining time to live for a key\n");
-    printf("  PERSIST key         - Remove expiration from a key\n");
-    printf("  SAVE filename       - Save the database to a file\n");
-    printf("  LOAD filename       - Load the database from a file\n");
-    printf("  HELP                - Show this help message\n");
-    printf("  EXIT                - Exit the program\n");
+    printf("  SET key value         - Set key to hold string value\n");
+    printf("  GET key               - Get the value of key\n");
+    printf("  DEL key               - Delete key\n");
+    printf("  EXISTS key            - Check if key exists\n");
+    printf("  INCR key              - Increment the integer value of key by one\n");
+    printf("  DECR key              - Decrement the integer value of key by one\n");
+    printf("  EXPIRE key seconds    - Set key to expire in N seconds\n");
+    printf("  TTL key               - Get remaining time to live for a key\n");
+    printf("  PERSIST key           - Remove expiration from a key\n");
+    printf("  LPUSH key value       - Push value to the left of the list\n");
+    printf("  RPUSH key value       - Push value to the right of the list\n");
+    printf("  LPOP key              - Pop from the left of the list\n");
+    printf("  RPOP key              - Pop from the right of the list\n");
+    printf("  LRANGE key start stop - Get a range of elements from list\n");
+    printf("  LLEN key              - Get the length of a list\n");
+    printf("  SAVE filename         - Save the database to a file\n");
+    printf("  LOAD filename         - Load the database from a file\n");
+    printf("  HELP                  - Show this help message\n");
+    printf("  EXIT                  - Exit the program\n");
     printf("\nServer options (when running in server mode):\n");
-    printf("  INFO                - Get server information\n");
-    printf("  PING                - Test connection (returns PONG)\n");
+    printf("  INFO                  - Get server information\n");
+    printf("  PING                  - Test connection (returns PONG)\n");
 }

@@ -4,6 +4,11 @@
 #include <stdio.h>
 #include <time.h>
 
+// Forward declarations for static functions
+static char *my_strdup(const char *s);
+static ListNode *create_list_node(const char *data);
+static Entry *get_entry(Database *db, const char *key);
+
 static char *my_strdup(const char *s)
 {
     if (!s)
@@ -60,12 +65,48 @@ void db_free(Database *db)
         {
             Entry *next = current->next;
             free(current->key);
-            free(current->value);
+
+            // Free value based on type
+            if (current->type == VALUE_STRING)
+            {
+                free(current->value.string_value);
+            }
+            else if (current->type == VALUE_LIST)
+            {
+                free_list(current->value.list_value);
+            }
+
             free(current);
             current = next;
         }
     }
     free(db);
+}
+
+// Get entry by key
+static Entry *get_entry(Database *db, const char *key)
+{
+    if (!db || !key)
+        return NULL;
+
+    unsigned int index = hash(key);
+    Entry *current = db->hash_table[index];
+
+    while (current)
+    {
+        if (strcmp(current->key, key) == 0)
+        {
+            // Check if entry is expired
+            if (db_is_expired(current))
+            {
+                db_delete(db, key);
+                return NULL;
+            }
+            return current;
+        }
+        current = current->next;
+    }
+    return NULL;
 }
 
 // Set a key-value pair in the database
@@ -82,15 +123,24 @@ void db_set(Database *db, const char *key, const char *value)
     {
         if (strcmp(current->key, key) == 0)
         {
-            // Update existing entry
-            char *new_value = my_strdup(value);
-            if (!new_value)
+            // Free existing value based on type
+            if (current->type == VALUE_STRING)
+            {
+                free(current->value.string_value);
+            }
+            else if (current->type == VALUE_LIST)
+            {
+                free(current->value.list_value);
+            }
+
+            // Update with new string value
+            current->type = VALUE_STRING;
+            current->value.string_value = my_strdup(value);
+            if (!current->value.string_value)
             {
                 fprintf(stderr, "Failed to allocate memory for value\n");
                 return;
             }
-            free(current->value);
-            current->value = new_value;
             return;
         }
         current = current->next;
@@ -112,8 +162,9 @@ void db_set(Database *db, const char *key, const char *value)
         return;
     }
 
-    new_entry->value = my_strdup(value);
-    if (!new_entry->value)
+    new_entry->type = VALUE_STRING;
+    new_entry->value.string_value = my_strdup(value);
+    if (!new_entry->value.string_value)
     {
         fprintf(stderr, "Failed to allocate memory for value\n");
         free(new_entry->key);
@@ -129,35 +180,17 @@ void db_set(Database *db, const char *key, const char *value)
 // Get a value by key from the database
 char *db_get(Database *db, const char *key)
 {
-    if (!db || !key)
+    Entry *entry = get_entry(db, key);
+    if (!entry || entry->type != VALUE_STRING)
         return NULL;
 
-    unsigned int index = hash(key);
-
-    Entry *current = db->hash_table[index];
-    while (current)
-    {
-        if (strcmp(current->key, key) == 0)
-        {
-            // Check if entry is expired
-            if (db_is_expired(current))
-            {
-                // Entry is expired, remove it and return NULL
-                db_delete(db, key);
-                return NULL;
-            }
-            return current->value;
-        }
-        current = current->next;
-    }
-
-    return NULL; // key not found
+    return entry->value.string_value;
 }
 
 // Check if a key exists in the database
 bool db_exists(Database *db, const char *key)
 {
-    return db_get(db, key) != NULL;
+    return get_entry(db, key) != NULL;
 }
 
 // Delete a key from the database
@@ -186,7 +219,16 @@ bool db_delete(Database *db, const char *key)
             }
 
             free(current->key);
-            free(current->value);
+
+            if (current->type == VALUE_STRING)
+            {
+                free(current->value.string_value);
+            }
+            else if (current->type == VALUE_LIST)
+            {
+                free_list(current->value.list_value);
+            }
+
             free(current);
             return true;
         }
@@ -239,7 +281,16 @@ void db_cleanup_expired(Database *db)
                 }
 
                 free(current->key);
-                free(current->value);
+
+                if (current->type == VALUE_STRING)
+                {
+                    free(current->value.string_value);
+                }
+                else if (current->type == VALUE_LIST)
+                {
+                    free_list(current->value.list_value);
+                }
+
                 free(current);
             }
             else
@@ -317,4 +368,334 @@ bool db_remove_expiration(Database *db, const char *key)
     }
 
     return false; // Key not found
+}
+
+static ListNode *create_list_node(const char *data)
+{
+    ListNode *node = (ListNode *)malloc(sizeof(ListNode));
+    if (!node)
+        return NULL;
+
+    node->data = my_strdup(data);
+    if (!node->data)
+    {
+        free(node);
+        return NULL;
+    }
+
+    node->prev = NULL;
+    node->next = NULL;
+    return node;
+}
+
+void free_list_node(ListNode *node)
+{
+    if (node)
+    {
+        free(node->data);
+        free(node);
+    }
+}
+
+List *create_list()
+{
+    List *list = (List *)malloc(sizeof(List));
+    if (!list)
+        return NULL;
+
+    list->head = NULL;
+    list->tail = NULL;
+    list->length = 0;
+    return list;
+}
+
+void free_list(List *list)
+{
+    if (!list)
+        return;
+
+    ListNode *current = list->head;
+    while (current)
+    {
+        ListNode *next = current->next;
+        free_list_node(current);
+        current = next;
+    }
+
+    free(list);
+}
+
+bool db_lpush(Database *db, const char *key, const char *value)
+{
+    if (!db || !key || !value)
+        return false;
+
+    unsigned int index = hash(key);
+    Entry *entry = get_entry(db, key);
+
+    if (entry)
+    {
+        // Key exists, must be a list
+        if (entry->type != VALUE_LIST)
+            return false; // Type mismatch
+    }
+    else
+    {
+        // Create new list entry
+        entry = (Entry *)malloc(sizeof(Entry));
+        if (!entry)
+            return false;
+
+        entry->key = my_strdup(key);
+        if (!entry->key)
+        {
+            free(entry);
+            return false;
+        }
+
+        entry->type = VALUE_LIST;
+        entry->value.list_value = create_list();
+        if (!entry->value.list_value)
+        {
+            free(entry->key);
+            free(entry);
+            return false;
+        }
+
+        entry->expiration = 0;
+        entry->next = db->hash_table[index];
+        db->hash_table[index] = entry;
+    }
+
+    // Add to the left of list
+    ListNode *new_node = create_list_node(value);
+    if (!new_node)
+        return false;
+
+    List *list = entry->value.list_value;
+
+    if (list->head == NULL)
+    {
+        // Empty list
+        list->head = list->tail = new_node;
+    }
+    else
+    {
+        // Add to beginning
+        new_node->next = list->head;
+        list->head->prev = new_node;
+        list->head = new_node;
+    }
+
+    list->length++;
+    return true;
+}
+
+bool db_rpush(Database *db, const char *key, const char *value)
+{
+    if (!db || !key || !value)
+        return false;
+
+    unsigned int index = hash(key);
+    Entry *entry = get_entry(db, key);
+
+    if (entry)
+    {
+        // Key exists, must be a list
+        if (entry->type != VALUE_LIST)
+            return false; // Type mismatch
+    }
+    else
+    {
+        // Create new list entry
+        entry = (Entry *)malloc(sizeof(Entry));
+        if (!entry)
+            return false;
+
+        entry->key = my_strdup(key);
+        if (!entry->key)
+        {
+            free(entry);
+            return false;
+        }
+
+        entry->type = VALUE_LIST;
+        entry->value.list_value = create_list();
+        if (!entry->value.list_value)
+        {
+            free(entry->key);
+            free(entry);
+            return false;
+        }
+
+        entry->expiration = 0;
+        entry->next = db->hash_table[index];
+        db->hash_table[index] = entry;
+    }
+
+    // Add to right of list
+    ListNode *new_node = create_list_node(value);
+    if (!new_node)
+        return false;
+
+    List *list = entry->value.list_value;
+
+    if (list->tail == NULL)
+    {
+        // Empty list
+        list->head = list->tail = new_node;
+    }
+    else
+    {
+        // Add to end
+        new_node->prev = list->tail;
+        list->tail->next = new_node;
+        list->tail = new_node;
+    }
+
+    list->length++;
+    return true;
+}
+
+char *db_lpop(Database *db, const char *key)
+{
+    Entry *entry = get_entry(db, key);
+    if (!entry || entry->type != VALUE_LIST)
+        return NULL;
+
+    List *list = entry->value.list_value;
+    if (list->length == 0)
+        return NULL;
+
+    ListNode *node = list->head;
+    char *data = my_strdup(node->data);
+
+    // Remove from list
+    if (list->length == 1)
+    {
+        list->head = list->tail = NULL;
+    }
+    else
+    {
+        list->head = node->next;
+        list->head->prev = NULL;
+    }
+
+    list->length--;
+    free_list_node(node);
+
+    // If list is empty, remove the key
+    if (list->length == 0)
+    {
+        db_delete(db, key);
+    }
+
+    return data;
+}
+
+char *db_rpop(Database *db, const char *key)
+{
+    Entry *entry = get_entry(db, key);
+    if (!entry || entry->type != VALUE_LIST)
+        return NULL;
+
+    List *list = entry->value.list_value;
+    if (list->length == 0)
+        return NULL;
+
+    ListNode *node = list->tail;
+    char *data = my_strdup(node->data);
+
+    // Remove from list
+    if (list->length == 1)
+    {
+        list->head = list->tail = NULL;
+    }
+    else
+    {
+        list->tail = node->prev;
+        list->tail->next = NULL;
+    }
+
+    list->length--;
+    free_list_node(node);
+
+    // If list is empty, remove the key
+    if (list->length == 0)
+    {
+        db_delete(db, key);
+    }
+
+    return data;
+}
+
+int db_llen(Database *db, const char *key)
+{
+    Entry *entry = get_entry(db, key);
+    if (!entry || entry->type != VALUE_LIST)
+        return 0;
+
+    return (int)entry->value.list_value->length;
+}
+
+char **db_lrange(Database *db, const char *key, int start, int stop, int *count)
+{
+    *count = 0;
+    Entry *entry = get_entry(db, key);
+    if (!entry || entry->type != VALUE_LIST)
+        return NULL;
+
+    List *list = entry->value.list_value;
+    int len = (int)list->length;
+
+    if (len == 0)
+        return NULL;
+
+    // Handle negative indices
+    if (start < 0)
+        start = len + start;
+    if (stop < 0)
+        stop = len + stop;
+
+    // Clamp to valid range
+    if (start < 0)
+        start = 0;
+    if (stop >= len)
+        stop = len - 1;
+    if (start > stop)
+        return NULL;
+
+    int result_count = stop - start + 1;
+    char **result = (char **)malloc(result_count * sizeof(char *));
+    if (!result)
+        return NULL;
+
+    // Navigate to start position
+    ListNode *current = list->head;
+    for (int i = 0; i < start && current; i++)
+    {
+        current = current->next;
+    }
+
+    // Collect elements
+    int idx = 0;
+    for (int i = start; i <= stop && current; i++)
+    {
+        result[idx] = my_strdup(current->data);
+        if (!result[idx])
+        {
+            // Cleanup on error
+            for (int j = 0; j < idx; j++)
+            {
+                free(result[j]);
+            }
+            free(result);
+            return NULL;
+        }
+        idx++;
+        current = current->next;
+    }
+
+    *count = result_count;
+    return result;
 }

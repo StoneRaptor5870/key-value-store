@@ -465,7 +465,7 @@ void process_client_command(int client_socket, Database *db, const char *command
         {
             // Return array of supported commands
             const char *command_list =
-                "*10\r\n"
+                "*16\r\n"
                 "$3\r\nSET\r\n"
                 "$3\r\nGET\r\n"
                 "$3\r\nDEL\r\n"
@@ -475,7 +475,13 @@ void process_client_command(int client_socket, Database *db, const char *command
                 "$4\r\nPING\r\n"
                 "$6\r\nEXPIRE\r\n"
                 "$3\r\nTTL\r\n"
-                "$7\r\nPERSIST\r\n";
+                "$7\r\nPERSIST\r\n"
+                "$5\r\nLPUSH\r\n"
+                "$5\r\nRPUSH\r\n"
+                "$4\r\nLPOP\r\n"
+                "$4\r\nRPOP\r\n"
+                "$6\r\nLRANGE\r\n"
+                "$4\r\nLLEN\r\n";
             send_response_debug(client_socket, command_list);
         }
     }
@@ -628,6 +634,162 @@ void process_client_command(int client_socket, Database *db, const char *command
         {
             bool result = persist_command(db, tokens[1]);
             send_response_debug(client_socket, result ? ":1\r\n" : ":0\r\n");
+        }
+    }
+    else if (strcasecmp(tokens[0], "LPUSH") == 0)
+    {
+        printf("DEBUG: Processing LPUSH\n");
+        if (token_count != 3)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'lpush' command\r\n");
+        }
+        else
+        {
+            if (lpush_command(db, tokens[1], tokens[2]))
+            {
+                int new_length = llen_command(db, tokens[1]);
+                snprintf(response, sizeof(response), ":%d\r\n", new_length);
+                send_response_debug(client_socket, response);
+            }
+            else
+            {
+                send_response_debug(client_socket, "-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+            }
+        }
+    }
+    else if (strcasecmp(tokens[0], "RPUSH") == 0)
+    {
+        printf("DEBUG: Processing RPUSH\n");
+        if (token_count != 3)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'rpush' command\r\n");
+        }
+        else
+        {
+            if (rpush_command(db, tokens[1], tokens[2]))
+            {
+                int new_length = llen_command(db, tokens[1]);
+                snprintf(response, sizeof(response), ":%d\r\n", new_length);
+                send_response_debug(client_socket, response);
+            }
+            else
+            {
+                send_response_debug(client_socket, "-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+            }
+        }
+    }
+    else if (strcasecmp(tokens[0], "LPOP") == 0)
+    {
+        printf("DEBUG: Processing LPOP\n");
+        if (token_count != 2)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'lpop' command\r\n");
+        }
+        else
+        {
+            char *value = lpop_command(db, tokens[1]);
+            if (value)
+            {
+                snprintf(response, sizeof(response), "$%zu\r\n%s\r\n", strlen(value), value);
+                send_response_debug(client_socket, response);
+                free(value);
+            }
+            else
+            {
+                send_response_debug(client_socket, "$-1\r\n"); // Redis nil response
+            }
+        }
+    }
+    else if (strcasecmp(tokens[0], "RPOP") == 0)
+    {
+        printf("DEBUG: Processing RPOP\n");
+        if (token_count != 2)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'rpop' command\r\n");
+        }
+        else
+        {
+            char *value = rpop_command(db, tokens[1]);
+            if (value)
+            {
+                snprintf(response, sizeof(response), "$%zu\r\n%s\r\n", strlen(value), value);
+                send_response_debug(client_socket, response);
+                free(value);
+            }
+            else
+            {
+                send_response_debug(client_socket, "$-1\r\n"); // Redis nil response
+            }
+        }
+    }
+    else if (strcasecmp(tokens[0], "LLEN") == 0)
+    {
+        printf("DEBUG: Processing LLEN\n");
+        if (token_count != 2)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'llen' command\r\n");
+        }
+        else
+        {
+            int length = llen_command(db, tokens[1]);
+            snprintf(response, sizeof(response), ":%d\r\n", length);
+            send_response_debug(client_socket, response);
+        }
+    }
+    else if (strcasecmp(tokens[0], "LRANGE") == 0)
+    {
+        printf("DEBUG: Processing LRANGE\n");
+        if (token_count != 4)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'lrange' command\r\n");
+        }
+        else
+        {
+            int start = atoi(tokens[2]);
+            int stop = atoi(tokens[3]);
+            int count = 0;
+            char **elements = lrange_command(db, tokens[1], start, stop, &count);
+
+            if (elements)
+            {
+                // Build RESP array response
+                char *resp_buffer = malloc(8192); // Large buffer for response
+                if (!resp_buffer)
+                {
+                    send_response_debug(client_socket, "-ERR Out of memory\r\n");
+                    // Free the elements array
+                    for (int i = 0; i < count; i++)
+                    {
+                        free(elements[i]);
+                    }
+                    free(elements);
+                }
+                else
+                {
+                    int offset = snprintf(resp_buffer, 8192, "*%d\r\n", count);
+
+                    for (int i = 0; i < count && offset < 8000; i++)
+                    {
+                        offset += snprintf(resp_buffer + offset, 8192 - offset,
+                                           "$%zu\r\n%s\r\n", strlen(elements[i]), elements[i]);
+                    }
+
+                    send_response_debug(client_socket, resp_buffer);
+                    free(resp_buffer);
+
+                    // Free the elements array
+                    for (int i = 0; i < count; i++)
+                    {
+                        free(elements[i]);
+                    }
+                    free(elements);
+                }
+            }
+            else
+            {
+                // Empty array
+                send_response_debug(client_socket, "*0\r\n");
+            }
         }
     }
     else if (strcasecmp(tokens[0], "SAVE") == 0)

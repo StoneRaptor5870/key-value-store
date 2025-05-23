@@ -276,6 +276,124 @@ int main(int argc, char *argv[])
                     }
                 }
             }
+            else if (strcasecmp(tokens[0], "LPUSH") == 0)
+            {
+                if (token_count != 3)
+                {
+                    printf("(error) Wrong number of arguments for 'LPUSH' command\n");
+                }
+                else
+                {
+                    if (lpush_command(db, tokens[1], tokens[2]))
+                    {
+                        int len = llen_command(db, tokens[1]);
+                        printf("(integer) %d\n", len);
+                    }
+                    else
+                    {
+                        printf("(error) Operation against a key holding the wrong kind of value\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "RPUSH") == 0)
+            {
+                if (token_count != 3)
+                {
+                    printf("(error) Wrong number of arguments for 'RPUSH' command\n");
+                }
+                else
+                {
+                    if (rpush_command(db, tokens[1], tokens[2]))
+                    {
+                        int len = llen_command(db, tokens[1]);
+                        printf("(integer) %d\n", len);
+                    }
+                    else
+                    {
+                        printf("(error) Operation against a key holding the wrong kind of value\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "LPOP") == 0)
+            {
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'LPOP' command\n");
+                }
+                else
+                {
+                    char *value = lpop_command(db, tokens[1]);
+                    if (value)
+                    {
+                        printf("\"%s\"\n", value);
+                        free(value);
+                    }
+                    else
+                    {
+                        printf("(nil)\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "RPOP") == 0)
+            {
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'RPOP' command\n");
+                }
+                else
+                {
+                    char *value = rpop_command(db, tokens[1]);
+                    if (value)
+                    {
+                        printf("\"%s\"\n", value);
+                        free(value);
+                    }
+                    else
+                    {
+                        printf("(nil)\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "LLEN") == 0)
+            {
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'LLEN' command\n");
+                }
+                else
+                {
+                    int len = llen_command(db, tokens[1]);
+                    printf("(integer) %d\n", len);
+                }
+            }
+            else if (strcasecmp(tokens[0], "LRANGE") == 0)
+            {
+                if (token_count != 4)
+                {
+                    printf("(error) Wrong number of arguments for 'LRANGE' command\n");
+                }
+                else
+                {
+                    int start = atoi(tokens[2]);
+                    int stop = atoi(tokens[3]);
+                    int count;
+                    char **values = lrange_command(db, tokens[1], start, stop, &count);
+
+                    if (values)
+                    {
+                        for (int i = 0; i < count; i++)
+                        {
+                            printf("%d) \"%s\"\n", i + 1, values[i]);
+                            free(values[i]);
+                        }
+                        free(values);
+                    }
+                    else if (count == 0)
+                    {
+                        printf("(empty list or set)\n");
+                    }
+                }
+            }
             else if (strcasecmp(tokens[0], "SAVE") == 0)
             {
                 if (token_count != 2)

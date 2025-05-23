@@ -11,6 +11,7 @@ A simple key-value store with both CLI and TCP server functionality.
 - Basic key operations: SET, GET, DEL, EXISTS
 - Integer operations: INCR, DECR
 - Key expiry & TTL operations: EXPIRE, TTL, PERSIST
+- List operations: LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE
 - Persistence: SAVE, LOAD
 - Compatible with Redis clients
 
@@ -72,6 +73,14 @@ bin/kv-store -h
 - `EXPIRE key time` - Set a key to expire in N seconds
 - `TTL key` - Get remaining time to live
 - `PERSIST key` - Remove expiration from a key
+
+### List Commands
+- `LPUSH key value` - Insert value at the head (left) of the list
+- `RPUSH key value` - Insert value at the tail (right) of the list
+- `LPOP key` - Remove and return the first element (left) of the list
+- `RPOP key` - Remove and return the last element (right) of the list
+- `LLEN key` - Get the length of the list
+- `LRANGE key start stop` - Get a range of elements from the list
 
 ### Persistence Commands
 
