@@ -84,7 +84,7 @@ bool save_command(Database *db, const char *filename)
             // Write expiration
             fprintf(file, "%d\n", (int)current->expiration);
 
-            // Write value length and value
+            // Write value based on type
             if (current->type == VALUE_STRING)
             {
                 // Write string value
@@ -108,6 +108,34 @@ bool save_command(Database *db, const char *filename)
                     fwrite(node->data, 1, data_len, file);
                     fprintf(file, "\n");
                     node = node->next;
+                }
+            }
+            else if (current->type == VALUE_HASH)
+            {
+                // Write hash field count
+                Hash *hash = current->value.hash_value;
+                fprintf(file, "%d\n", (int)hash->field_count);
+
+                // Write each hash field-value pair
+                for (size_t bucket = 0; bucket < hash->bucket_count; bucket++)
+                {
+                    HashField *field = hash->buckets[bucket];
+                    while (field)
+                    {
+                        // Write field name length and field name
+                        int field_len = strlen(field->field);
+                        fprintf(file, "%d\n", field_len);
+                        fwrite(field->field, 1, field_len, file);
+                        fprintf(file, "\n");
+
+                        // Write field value length and field value
+                        int value_len = strlen(field->value);
+                        fprintf(file, "%d\n", value_len);
+                        fwrite(field->value, 1, value_len, file);
+                        fprintf(file, "\n");
+
+                        field = field->next;
+                    }
                 }
             }
             current = current->next;
@@ -216,7 +244,11 @@ bool load_command(Database *db, const char *filename)
             }
             else if (current->type == VALUE_LIST)
             {
-                free(current->value.list_value);
+                free_list(current->value.list_value);
+            }
+            else if (current->type == VALUE_HASH)
+            {
+                free_hash(current->value.hash_value);
             }
             free(current);
             current = next;
@@ -411,7 +443,6 @@ bool load_command(Database *db, const char *filename)
                 if (!db_rpush(db, key, data))
                 {
                     fprintf(stderr, "Failed to add element to list for key %s\n", key);
-                    // free(key);
                     free(data);
                     fclose(file);
 
@@ -425,6 +456,138 @@ bool load_command(Database *db, const char *filename)
             }
 
             // Set expiration for the list
+            if (expiration != 0)
+            {
+                db_set_expiration(db, key, (time_t)expiration);
+            }
+        }
+        else if (type == VALUE_HASH)
+        {
+            // Read hash field count
+            int field_count;
+            if (fscanf(file, "%d\n", &field_count) != 1)
+            {
+                fprintf(stderr, "Failed to read hash field count for entry %d\n", i);
+                free(key);
+                fclose(file);
+
+                // Free allocated memory if we created a new filename
+                if (full_filename != filename)
+                    free(full_filename);
+                return false;
+            }
+
+            // Read hash field-value pairs
+            for (int j = 0; j < field_count; j++)
+            {
+                // Read field name length
+                int field_len;
+                if (fscanf(file, "%d\n", &field_len) != 1)
+                {
+                    fprintf(stderr, "Failed to read field name length for entry %d, field %d\n", i, j);
+                    free(key);
+                    fclose(file);
+
+                    // Free allocated memory if we created a new filename
+                    if (full_filename != filename)
+                        free(full_filename);
+                    return false;
+                }
+
+                // Read field name
+                char *field_name = (char *)malloc(field_len + 1);
+                if (!field_name)
+                {
+                    fprintf(stderr, "Failed to allocate memory for field name\n");
+                    free(key);
+                    fclose(file);
+
+                    // Free allocated memory if we created a new filename
+                    if (full_filename != filename)
+                        free(full_filename);
+                    return false;
+                }
+
+                if (fread(field_name, 1, field_len, file) != (size_t)field_len)
+                {
+                    fprintf(stderr, "Failed to read field name for entry %d, field %d\n", i, j);
+                    free(key);
+                    free(field_name);
+                    fclose(file);
+
+                    // Free allocated memory if we created a new filename
+                    if (full_filename != filename)
+                        free(full_filename);
+                    return false;
+                }
+                field_name[field_len] = '\0';
+                fgetc(file); // Skip newline
+
+                // Read field value length
+                int field_value_len;
+                if (fscanf(file, "%d\n", &field_value_len) != 1)
+                {
+                    fprintf(stderr, "Failed to read field value length for entry %d, field %d\n", i, j);
+                    free(key);
+                    free(field_name);
+                    fclose(file);
+
+                    // Free allocated memory if we created a new filename
+                    if (full_filename != filename)
+                        free(full_filename);
+                    return false;
+                }
+
+                // Read field value
+                char *field_value = (char *)malloc(field_value_len + 1);
+                if (!field_value)
+                {
+                    fprintf(stderr, "Failed to allocate memory for field value\n");
+                    free(key);
+                    free(field_name);
+                    fclose(file);
+
+                    // Free allocated memory if we created a new filename
+                    if (full_filename != filename)
+                        free(full_filename);
+                    return false;
+                }
+
+                if (fread(field_value, 1, field_value_len, file) != (size_t)field_value_len)
+                {
+                    fprintf(stderr, "Failed to read field value for entry %d, field %d\n", i, j);
+                    free(key);
+                    free(field_name);
+                    free(field_value);
+                    fclose(file);
+
+                    // Free allocated memory if we created a new filename
+                    if (full_filename != filename)
+                        free(full_filename);
+                    return false;
+                }
+                field_value[field_value_len] = '\0';
+                fgetc(file); // Skip newline
+
+                // Set hash field (this will create the hash entry on first call)
+                if (!db_hset(db, key, field_name, field_value))
+                {
+                    fprintf(stderr, "Failed to set hash field for key %s, field %s\n", key, field_name);
+                    free(field_name);
+                    free(field_value);
+                    fclose(file);
+
+                    // Free allocated memory if we created a new filename
+                    if (full_filename != filename)
+                        free(full_filename);
+                    return false;
+                }
+
+                free(field_name);
+                free(field_value);
+            }
+
+            // Set expiration for the hash
             if (expiration != 0)
             {
                 db_set_expiration(db, key, (time_t)expiration);

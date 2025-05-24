@@ -465,7 +465,7 @@ void process_client_command(int client_socket, Database *db, const char *command
         {
             // Return array of supported commands
             const char *command_list =
-                "*16\r\n"
+                "*21\r\n"
                 "$3\r\nSET\r\n"
                 "$3\r\nGET\r\n"
                 "$3\r\nDEL\r\n"
@@ -481,7 +481,12 @@ void process_client_command(int client_socket, Database *db, const char *command
                 "$4\r\nLPOP\r\n"
                 "$4\r\nRPOP\r\n"
                 "$6\r\nLRANGE\r\n"
-                "$4\r\nLLEN\r\n";
+                "$4\r\nLLEN\r\n"
+                "$4\r\nHSET\r\n"
+                "$4\r\nHGET\r\n"
+                "$7\r\nHGETALL\r\n"
+                "$4\r\nHDEL\r\n"
+                "$7\r\nHEXISTS\r\n";
             send_response_debug(client_socket, command_list);
         }
     }
@@ -783,6 +788,126 @@ void process_client_command(int client_socket, Database *db, const char *command
                         free(elements[i]);
                     }
                     free(elements);
+                }
+            }
+            else
+            {
+                // Empty array
+                send_response_debug(client_socket, "*0\r\n");
+            }
+        }
+    }
+    else if (strcasecmp(tokens[0], "HSET") == 0)
+    {
+        printf("DEBUG: Processing HSET\n");
+        if (token_count != 4)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'hset' command\r\n");
+        }
+        else
+        {
+            if (hset_command(db, tokens[1], tokens[2], tokens[3]))
+            {
+                send_response_debug(client_socket, ":1\r\n"); // Redis returns 1 for new field, 0 for update
+            }
+            else
+            {
+                send_response_debug(client_socket, "-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+            }
+        }
+    }
+    else if (strcasecmp(tokens[0], "HGET") == 0)
+    {
+        printf("DEBUG: Processing HGET\n");
+        if (token_count != 3)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'hget' command\r\n");
+        }
+        else
+        {
+            char *value = hget_command(db, tokens[1], tokens[2]);
+            if (value)
+            {
+                snprintf(response, sizeof(response), "$%zu\r\n%s\r\n", strlen(value), value);
+                send_response_debug(client_socket, response);
+            }
+            else
+            {
+                send_response_debug(client_socket, "$-1\r\n"); // Redis nil response
+            }
+        }
+    }
+    else if (strcasecmp(tokens[0], "HDEL") == 0)
+    {
+        printf("DEBUG: Processing HDEL\n");
+        if (token_count != 3)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'hdel' command\r\n");
+        }
+        else
+        {
+            bool deleted = hdel_command(db, tokens[1], tokens[2]);
+            send_response_debug(client_socket, deleted ? ":1\r\n" : ":0\r\n");
+        }
+    }
+    else if (strcasecmp(tokens[0], "HEXISTS") == 0)
+    {
+        printf("DEBUG: Processing HEXISTS\n");
+        if (token_count != 3)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'hexists' command\r\n");
+        }
+        else
+        {
+            bool exists = hexists_command(db, tokens[1], tokens[2]);
+            send_response_debug(client_socket, exists ? ":1\r\n" : ":0\r\n");
+        }
+    }
+    else if (strcasecmp(tokens[0], "HGETALL") == 0)
+    {
+        printf("DEBUG: Processing HGETALL\n");
+        if (token_count != 2)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'hgetall' command\r\n");
+        }
+        else
+        {
+            int count = 0;
+            char **fields_and_values = hgetall_command(db, tokens[1], &count);
+
+            if (fields_and_values && count > 0)
+            {
+                // Build RESP array response
+                char *resp_buffer = malloc(8192); // Large buffer for response
+                if (!resp_buffer)
+                {
+                    send_response_debug(client_socket, "-ERR Out of memory\r\n");
+                    // Free the array
+                    for (int i = 0; i < count; i++)
+                    {
+                        free(fields_and_values[i]);
+                    }
+                    free(fields_and_values);
+                }
+                else
+                {
+                    int offset = snprintf(resp_buffer, 8192, "*%d\r\n", count);
+
+                    for (int i = 0; i < count && offset < 8000; i++)
+                    {
+                        offset += snprintf(resp_buffer + offset, 8192 - offset,
+                                           "$%zu\r\n%s\r\n", strlen(fields_and_values[i]), fields_and_values[i]);
+                    }
+
+                    send_response_debug(client_socket, resp_buffer);
+                    free(resp_buffer);
+
+                    // Free the array
+                    for (int i = 0; i < count; i++)
+                    {
+                        free(fields_and_values[i]);
+                    }
+                    free(fields_and_values);
                 }
             }
             else

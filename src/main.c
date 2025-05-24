@@ -394,6 +394,105 @@ int main(int argc, char *argv[])
                     }
                 }
             }
+            else if (strcasecmp(tokens[0], "HSET") == 0)
+            {
+                if (token_count != 4)
+                {
+                    printf("(error) Wrong number of arguments for 'HSET' command\n");
+                }
+                else
+                {
+                    if (hset_command(db, tokens[1], tokens[2], tokens[3]))
+                    {
+                        printf("(integer) 1\n");
+                    }
+                    else
+                    {
+                        printf("(error) Operation against a key holding the wrong kind of value\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "HGET") == 0)
+            {
+                if (token_count != 3)
+                {
+                    printf("(error) Wrong number of arguments for 'HGET' command\n");
+                }
+                else
+                {
+                    char *value = hget_command(db, tokens[1], tokens[2]);
+                    if (value)
+                    {
+                        printf("\"%s\"\n", value);
+                    }
+                    else
+                    {
+                        printf("(nil)\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "HGETALL") == 0)
+            {
+                if (token_count != 2)
+                {
+                    printf("(error) Wrong number of arguments for 'HGETALL' command\n");
+                }
+                else
+                {
+                    int count;
+                    char **fields_and_values = hgetall_command(db, tokens[1], &count);
+
+                    if (fields_and_values && count > 0)
+                    {
+                        for (int i = 0; i < count; i++)
+                        {
+                            printf("%d) \"%s\"\n", i + 1, fields_and_values[i]);
+                            free(fields_and_values[i]);
+                        }
+                        free(fields_and_values);
+                    }
+                    else
+                    {
+                        printf("(empty list or set)\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "HDEL") == 0)
+            {
+                if (token_count != 3)
+                {
+                    printf("(error) Wrong number of arguments for 'HDEL' command\n");
+                }
+                else
+                {
+                    if (hdel_command(db, tokens[1], tokens[2]))
+                    {
+                        printf("(integer) 1\n");
+                    }
+                    else
+                    {
+                        printf("(integer) 0\n");
+                    }
+                }
+            }
+            else if (strcasecmp(tokens[0], "HEXISTS") == 0)
+            {
+                if (token_count != 3)
+                {
+                    printf("(error) Wrong number of arguments for 'HEXISTS' command\n");
+                }
+                else
+                {
+                    if (hexists_command(db, tokens[1], tokens[2]))
+                    {
+                        printf("(integer) 1\n");
+                    }
+                    else
+                    {
+                        printf("(integer) 0\n");
+                    }
+                }
+            }
             else if (strcasecmp(tokens[0], "SAVE") == 0)
             {
                 if (token_count != 2)

@@ -194,6 +194,38 @@ int llen_command(Database *db, const char *key)
     return db_llen(db, key);
 }
 
+// Hash commands implementation
+
+// HSET command implementation
+bool hset_command(Database *db, const char *key, const char *field, const char *value)
+{
+    return db_hset(db, key, field, value);
+}
+
+// HGET command implementation
+char *hget_command(Database *db, const char *key, const char *field)
+{
+    return db_hget(db, key, field);
+}
+
+// HGETALL command implementation
+char **hgetall_command(Database *db, const char *key, int *count)
+{
+    return db_hgetall(db, key, count);
+}
+
+// HDEL command implementation
+bool hdel_command(Database *db, const char *key, const char *field)
+{
+    return db_hdel(db, key, field);
+}
+
+// HEXISTS command implementation
+bool hexists_command(Database *db, const char *key, const char *field)
+{
+    return db_hexists(db, key, field);
+}
+
 // Display help information
 void print_help()
 {
@@ -213,6 +245,11 @@ void print_help()
     printf("  RPOP key              - Pop from the right of the list\n");
     printf("  LRANGE key start stop - Get a range of elements from list\n");
     printf("  LLEN key              - Get the length of a list\n");
+    printf("  HSET key field value  - Set field in hash stored at key\n");
+    printf("  HGET key field        - Get value of field in hash stored at key\n");
+    printf("  HGETALL key           - Get all fields and values in hash\n");
+    printf("  HDEL key field        - Delete field from hash stored at key\n");
+    printf("  HEXISTS key field     - Check if field exists in hash stored at key\n");
     printf("  SAVE filename         - Save the database to a file\n");
     printf("  LOAD filename         - Load the database from a file\n");
     printf("  HELP                  - Show this help message\n");

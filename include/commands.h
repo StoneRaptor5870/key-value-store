@@ -26,6 +26,13 @@ char *rpop_command(Database *db, const char *key);
 char **lrange_command(Database *db, const char *key, int start, int stop, int *count);
 int llen_command(Database *db, const char *key);
 
+// Hash comamnds
+bool hset_command(Database *db, const char *key, const char *field, const char *value);
+char *hget_command(Database *db, const char *key, const char *field);
+char **hgetall_command(Database *db, const char *key, int *count);
+bool hdel_command(Database *db, const char *key, const char *field);
+bool hexists_command(Database *db, const char *key, const char *field);
+
 // Utility function
 void print_help();
 

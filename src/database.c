@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <time.h>
 
+#define HASH_BUCKET_SIZE 16 // Small hash table for fields within a hash
+
 // Forward declarations for static functions
 static char *my_strdup(const char *s);
 static ListNode *create_list_node(const char *data);
@@ -75,6 +77,10 @@ void db_free(Database *db)
             {
                 free_list(current->value.list_value);
             }
+            else if (current->type == VALUE_HASH)
+            {
+                free_hash(current->value.hash_value);
+            }
 
             free(current);
             current = next;
@@ -131,6 +137,10 @@ void db_set(Database *db, const char *key, const char *value)
             else if (current->type == VALUE_LIST)
             {
                 free(current->value.list_value);
+            }
+            else if (current->type == VALUE_HASH)
+            {
+                free_hash(current->value.hash_value);
             }
 
             // Update with new string value
@@ -227,6 +237,10 @@ bool db_delete(Database *db, const char *key)
             else if (current->type == VALUE_LIST)
             {
                 free_list(current->value.list_value);
+            }
+            else if (current->type == VALUE_HASH)
+            {
+                free_hash(current->value.hash_value);
             }
 
             free(current);
@@ -698,4 +712,292 @@ char **db_lrange(Database *db, const char *key, int start, int stop, int *count)
 
     *count = result_count;
     return result;
+}
+
+// ----------------------------------Hash operations logic-----------------------------------
+
+// Hash function for hash fields
+static unsigned int hash_field(const char *field)
+{
+    unsigned int hash_val = 0;
+    while (*field)
+    {
+        hash_val = (hash_val << 5) + *field++;
+    }
+    return hash_val % HASH_BUCKET_SIZE;
+}
+
+// Create a new hash structure
+Hash *create_hash()
+{
+    Hash *hash = (Hash *)malloc(sizeof(Hash));
+    if (!hash)
+        return NULL;
+
+    hash->buckets = (HashField **)calloc(HASH_BUCKET_SIZE, sizeof(HashField *));
+    if (!hash->buckets)
+    {
+        free(hash);
+        return NULL;
+    }
+
+    hash->bucket_count = HASH_BUCKET_SIZE;
+    hash->field_count = 0;
+    return hash;
+}
+
+// Free hash structure and all its fields
+void free_hash(Hash *hash)
+{
+    if (!hash)
+        return;
+
+    for (size_t i = 0; i < hash->bucket_count; i++)
+    {
+        HashField *current = hash->buckets[i];
+        while (current)
+        {
+            HashField *next = current->next;
+            free(current->field);
+            free(current->value);
+            free(current);
+            current = next;
+        }
+    }
+
+    free(hash->buckets);
+    free(hash);
+}
+
+// HSET - Set field in hash stored at key
+bool db_hset(Database *db, const char *key, const char *field, const char *value)
+{
+    if (!db || !key || !field || !value)
+        return false;
+
+    unsigned int index = hash(key);
+    Entry *entry = get_entry(db, key);
+
+    if (entry)
+    {
+        // Key exists, must be a hash
+        if (entry->type != VALUE_HASH)
+            return false; // Type mismatch
+    }
+    else
+    {
+        // Create a new hash entry
+        entry = (Entry *)malloc(sizeof(Entry));
+        if (!entry)
+            return false;
+
+        entry->key = my_strdup(key);
+        if (!entry->key)
+        {
+            free(entry);
+            return false;
+        }
+
+        entry->type = VALUE_HASH;
+        entry->value.hash_value = create_hash();
+        if (!entry->value.hash_value)
+        {
+            free(entry->key);
+            free(entry);
+            return false;
+        }
+
+        entry->expiration = 0;
+        entry->next = db->hash_table[index];
+        db->hash_table[index] = entry;
+    }
+
+    Hash *hash = entry->value.hash_value;
+    unsigned int field_index = hash_field(field);
+
+    // Check if field already exists
+    HashField *current = hash->buckets[field_index];
+    while (current)
+    {
+        if (strcmp(current->field, field) == 0)
+        {
+            // Field exists, update value
+            free(current->value);
+            current->value = my_strdup(value);
+            return current->value != NULL;
+        }
+        current = current->next;
+    }
+
+    // Field doesn't exist, create new one
+    HashField *new_field = (HashField *)malloc(sizeof(HashField));
+    if (!new_field)
+        return false;
+
+    new_field->field = my_strdup(field);
+    new_field->value = my_strdup(value);
+    if (!new_field->field || !new_field->value)
+    {
+        free(new_field->field);
+        free(new_field->value);
+        free(new_field);
+        return false;
+    }
+
+    new_field->next = hash->buckets[field_index];
+    hash->buckets[field_index] = new_field;
+    hash->field_count++;
+
+    return true;
+}
+
+// HGET - Get value of field in hash stored at a key
+char *db_hget(Database *db, const char *key, const char *field)
+{
+    if (!db || !key || !field)
+        return NULL;
+
+    Entry *entry = get_entry(db, key);
+    if (!entry || entry->type != VALUE_HASH)
+        return NULL;
+
+    Hash *hash = entry->value.hash_value;
+    unsigned int field_index = hash_field(field);
+
+    HashField *current = hash->buckets[field_index];
+    while (current)
+    {
+        if (strcmp(current->field, field) == 0)
+        {
+            return current->value;
+        }
+        current = current->next;
+    }
+
+    return NULL; // Field not found
+}
+
+// HEXISTS - Check if the field exists in hash
+bool db_hexists(Database *db, const char *key, const char *field)
+{
+    if (!db || !key || !field)
+        return false;
+
+    Entry *entry = get_entry(db, key);
+    if (!entry || entry->type != VALUE_HASH)
+        return false;
+
+    Hash *hash = entry->value.hash_value;
+    unsigned int field_index = hash_field(field);
+
+    HashField *current = hash->buckets[field_index];
+    while (current)
+    {
+        if (strcmp(current->field, field) == 0)
+        {
+            return true;
+        }
+        current = current->next;
+    }
+
+    return false;
+}
+
+// HGETALL - Get all fields and values in hash
+char **db_hgetall(Database *db, const char *key, int *count)
+{
+    *count = 0;
+    if (!db || !key)
+        return NULL;
+
+    Entry *entry = get_entry(db, key);
+    if (!entry || entry->type != VALUE_HASH)
+        return NULL;
+
+    Hash *hash = entry->value.hash_value;
+    if (hash->field_count == 0)
+        return NULL;
+
+    // Allocate array for field value pairs (2 strings per field)
+    char **result = (char **)malloc(hash->field_count * 2 * sizeof(char *));
+    if (!result)
+        return NULL;
+
+    int idx = 0;
+    for (size_t i = 0; i < hash->bucket_count; i++)
+    {
+        HashField *current = hash->buckets[i];
+        while (current)
+        {
+            result[idx++] = my_strdup(current->field);
+            result[idx++] = my_strdup(current->value);
+
+            // Check for allocation failure
+            if (!result[idx - 2] || !result[idx - 1])
+            {
+                // Cleanup on error
+                for (int j = 0; j < idx; j++)
+                {
+                    free(result[j]);
+                }
+                free(result);
+                return NULL;
+            }
+
+            current = current->next;
+        }
+    }
+
+    *count = hash->field_count * 2; // Return total count including both fields and values
+    return result;
+}
+
+// HDEL - Delete field from hash
+bool db_hdel(Database *db, const char *key, const char *field)
+{
+    if (!db || !key || !field)
+        return false;
+
+    Entry *entry = get_entry(db, key);
+    if (!entry || entry->type != VALUE_HASH)
+        return false;
+
+    Hash *hash = entry->value.hash_value;
+    unsigned int field_index = hash_field(field);
+
+    HashField *current = hash->buckets[field_index];
+    HashField *prev = NULL;
+
+    while (current)
+    {
+        if (strcmp(current->field, field) == 0)
+        {
+            // Remove field
+            if (prev)
+            {
+                prev->next = current->next;
+            }
+            else
+            {
+                hash->buckets[field_index] = current->next;
+            }
+
+            free(current->field);
+            free(current->value);
+            free(current);
+            hash->field_count--;
+
+            // If hash is empty, remove the key
+            if (hash->field_count == 0)
+            {
+                db_delete(db, key);
+            }
+
+            return true;
+        }
+        prev = current;
+        current = current->next;
+    }
+
+    return false; // Field not found
 }

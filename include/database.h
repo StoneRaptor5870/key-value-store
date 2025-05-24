@@ -11,8 +11,24 @@
 typedef enum
 {
     VALUE_STRING,
-    VALUE_LIST
+    VALUE_LIST,
+    VALUE_HASH
 } ValueType;
+
+// Hash structure
+typedef struct HashField
+{
+    char *field;
+    char *value;
+    struct HashField *next;
+} HashField;
+
+typedef struct
+{
+    HashField **buckets;
+    size_t bucket_count;
+    size_t field_count;
+} Hash;
 
 // List node structure for doubly linked list
 typedef struct ListNode
@@ -39,6 +55,7 @@ typedef struct Entry
     {
         char *string_value;
         List *list_value;
+        Hash *hash_value;
     } value;
     time_t expiration; // (0 = no expiration)
     struct Entry *next;
@@ -80,5 +97,14 @@ int db_llen(Database *db, const char *key);
 List *create_list(void);
 void free_list_node(ListNode *node);
 void free_list(List *list);
+
+// Function prototypes for hash operations
+Hash *create_hash();
+void free_hash(Hash *hash);
+bool db_hset(Database *db, const char *key, const char *field, const char *value);
+char *db_hget(Database *db, const char *key, const char *field);
+char **db_hgetall(Database *db, const char *key, int *count);
+bool db_hdel(Database *db, const char *key, const char *field);
+bool db_hexists(Database *db, const char *key, const char *field);
 
 #endif /* DATABASE_H */
