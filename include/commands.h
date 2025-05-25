@@ -2,6 +2,7 @@
 #define COMMANDS_H
 
 #include "database.h"
+#include "pubsub.h"
 #include <stdbool.h>
 #include <time.h>
 
@@ -32,6 +33,13 @@ char *hget_command(Database *db, const char *key, const char *field);
 char **hgetall_command(Database *db, const char *key, int *count);
 bool hdel_command(Database *db, const char *key, const char *field);
 bool hexists_command(Database *db, const char *key, const char *field);
+
+// Pub/Sub commands
+bool subscribe_command(PubSubManager *pubsub, int client_socket, const char *channel);
+bool unsubscribe_command(PubSubManager *pubsub, int client_socket, const char *channel);
+void unsubscribe_all_command(PubSubManager *pubsub, int client_socket);
+int publish_command(PubSubManager *pubsub, const char *channel, const char *message);
+char **pubchannels_command(PubSubManager *pubsub, int client_socket, int *count);
 
 // Utility function
 void print_help();

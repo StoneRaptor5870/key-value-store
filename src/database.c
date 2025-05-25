@@ -24,6 +24,7 @@ static char *my_strdup(const char *s)
     }
     return new_str;
 }
+
 unsigned int hash(const char *key)
 {
     unsigned int hash_val = 0;

@@ -226,6 +226,34 @@ bool hexists_command(Database *db, const char *key, const char *field)
     return db_hexists(db, key, field);
 }
 
+// Pub/Sub command implementations
+bool subscribe_command(PubSubManager *pubsub, int client_socket, const char *channel)
+{
+    return pubsub_subscribe(pubsub, client_socket, channel);
+}
+
+bool unsubscribe_command(PubSubManager *pubsub, int client_socket, const char *channel)
+{
+    // TODO Fix unsubscribe error
+    return pubsub_unsubscribe(pubsub, client_socket, channel);
+}
+
+void unsubscribe_all_command(PubSubManager *pubsub, int client_socket)
+{
+    // TODO Check this one too
+    return pubsub_unsubscribe_all(pubsub, client_socket);
+}
+
+int publish_command(PubSubManager *pubsub, const char *channel, const char *message)
+{
+    return pubsub_publish(pubsub, channel, message);
+}
+
+char **pubchannels_command(PubSubManager *pubsub, int client_socket, int *count)
+{
+    return pubsub_get_subscribed_channels(pubsub, client_socket, count);
+}
+
 // Display help information
 void print_help()
 {
@@ -250,6 +278,10 @@ void print_help()
     printf("  HGETALL key           - Get all fields and values in hash\n");
     printf("  HDEL key field        - Delete field from hash stored at key\n");
     printf("  HEXISTS key field     - Check if field exists in hash stored at key\n");
+    printf("  SUBSCRIBE channel     - Subscribe to a pub/sub channel\n");
+    printf("  UNSUBSCRIBE channel   - Unsubscribe from a pub/sub channel\n");
+    printf("  PUBLISH channel msg   - Publish message to a channel\n");
+    printf("  PUBSUB CHANNELS       - List subscribed channels\n");
     printf("  SAVE filename         - Save the database to a file\n");
     printf("  LOAD filename         - Load the database from a file\n");
     printf("  HELP                  - Show this help message\n");

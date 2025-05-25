@@ -3,6 +3,7 @@
 #include "../include/commands.h"
 #include "../include/utils.h"
 #include "../include/persistence.h"
+#include "../include/pubsub.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,7 @@ static int g_server_socket = -1;
 static volatile bool g_server_running = true;
 static int g_active_connections = 0;
 static pthread_mutex_t g_connection_mutex = PTHREAD_MUTEX_INITIALIZER;
+static PubSubManager *g_pubsub_manager = NULL;
 
 // Maximum connections and buffer sizes
 #define MAX_CONNECTIONS 100
@@ -111,6 +113,7 @@ typedef struct
 {
     int client_socket;
     Database *db;
+    PubSubManager *pubsub;
     struct sockaddr_in client_addr;
 } ThreadArgs;
 
@@ -126,6 +129,12 @@ void handle_signal(int signal)
         g_server_socket = -1;
     }
 
+    if (g_pubsub_manager)
+    {
+        pubsub_free(g_pubsub_manager);
+        g_pubsub_manager = NULL;
+    }
+
     // Give some time for connections to close
     sleep(1);
     exit(0);
@@ -137,6 +146,7 @@ void *client_handler(void *arg)
     ThreadArgs *args = (ThreadArgs *)arg;
     int client_socket = args->client_socket;
     Database *db = args->db;
+    // PubSubManager *pubsub = args->pubsub;
     struct sockaddr_in client_addr = args->client_addr;
 
     printf("Thread started for client %s:%d\n",
@@ -149,7 +159,13 @@ void *client_handler(void *arg)
     pthread_mutex_unlock(&g_connection_mutex);
 
     // Handle client connection
-    handle_client(client_socket, db);
+    handle_client(client_socket, db, g_pubsub_manager);
+
+    // Unsubscribe from all channels when client disconnects
+    if (g_pubsub_manager)
+    {
+        pubsub_unsubscribe_all(g_pubsub_manager, client_socket);
+    }
 
     // Cleanup
     close(client_socket);
@@ -180,12 +196,23 @@ bool start_server(Database *db, int port)
         return false;
     }
 
+    // Create the global pubsub manager
+    g_pubsub_manager = pubsub_create();
+    if (!g_pubsub_manager)
+    {
+        fprintf(stderr, "Failed to create pub/sub manager\n");
+        close(g_server_socket);
+        return false;
+    }
+
     // Set socket options to allow address reuse
     int opt = 1;
     if (setsockopt(g_server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
     {
         perror("Failed to set socket options");
         close(g_server_socket);
+        pubsub_free(g_pubsub_manager);
+        g_pubsub_manager = NULL;
         return false;
     }
 
@@ -201,6 +228,8 @@ bool start_server(Database *db, int port)
         perror("Failed to bind socket");
         printf("Make sure port %d is not already in use\n", port);
         close(g_server_socket);
+        pubsub_free(g_pubsub_manager);
+        g_pubsub_manager = NULL;
         return false;
     }
 
@@ -209,6 +238,8 @@ bool start_server(Database *db, int port)
     {
         perror("Failed to listen on socket");
         close(g_server_socket);
+        pubsub_free(g_pubsub_manager);
+        g_pubsub_manager = NULL;
         return false;
     }
 
@@ -268,6 +299,7 @@ bool start_server(Database *db, int port)
 
         thread_args->client_socket = client_socket;
         thread_args->db = db;
+        thread_args->pubsub = g_pubsub_manager;
         thread_args->client_addr = client_addr;
 
         // Create thread to handle client
@@ -285,11 +317,19 @@ bool start_server(Database *db, int port)
     }
 
     printf("Server shutting down...\n");
+
+    // Clean up pubsub manager
+    if (g_pubsub_manager)
+    {
+        pubsub_free(g_pubsub_manager);
+        g_pubsub_manager = NULL;
+    }
+
     return true;
 }
 
 // Function to handle client connection with proper buffer management
-void handle_client(int client_socket, Database *db)
+void handle_client(int client_socket, Database *db, PubSubManager *pubsub)
 {
     DynamicBuffer command_buffer;
     char recv_buffer[4096];
@@ -303,12 +343,6 @@ void handle_client(int client_socket, Database *db)
         fprintf(stderr, "Failed to initialize command buffer\n");
         return;
     }
-
-    // Send welcome message
-    // const char *welcome = "+OK Connected to Key Value Store\r\n";
-    // send_response_debug(client_socket, welcome);
-
-    // printf("DEBUG: Sent welcome message\n");
 
     while (g_server_running)
     {
@@ -379,7 +413,7 @@ void handle_client(int client_socket, Database *db)
                    (command_len > 50) ? "..." : "");
 
             // Process the complete command
-            process_client_command(client_socket, db, cmd_copy);
+            process_client_command(client_socket, db, pubsub, cmd_copy);
             free(cmd_copy);
 
             // Remove the processed command from the buffer
@@ -392,7 +426,7 @@ void handle_client(int client_socket, Database *db)
 }
 
 // Function to process commands received from client
-void process_client_command(int client_socket, Database *db, const char *command)
+void process_client_command(int client_socket, Database *db, PubSubManager *pubsub, const char *command)
 {
     printf("DEBUG: process_client_command called with: '%.100s%s'\n",
            command, (strlen(command) > 100) ? "..." : "");
@@ -403,51 +437,25 @@ void process_client_command(int client_socket, Database *db, const char *command
         return;
     }
 
-    // Parse the command (might be in RESP format)
-    int resp_token_count = 0;
+    // Parse the command (RESP format)
+    int token_count = 0;
     size_t command_len = strlen(command);
-    char *parsed_command = parse_resp(command, command_len, &resp_token_count);
+    char **tokens = parse_resp_tokens(command, command_len, &token_count);
 
-    printf("DEBUG: parse_resp returned: %s\n", parsed_command ? "valid" : "NULL");
+    printf("DEBUG: parse_resp_tokens returned: %s with %d tokens\n", tokens ? "valid" : "NULL", token_count);
 
-    if (!parsed_command)
+    if (!tokens || token_count == 0)
     {
         printf("Failed to parse command: '%.*s'\n", (int)command_len, command);
         send_response_debug(client_socket, "-ERR Invalid command format\r\n");
         return;
     }
 
-    // Remove trailing CRLF
-    char *clean_command = malloc(strlen(parsed_command) + 1);
-    if (!clean_command)
-    {
-        free(parsed_command);
-        send_response_debug(client_socket, "-ERR Out of memory\r\n");
-        return;
-    }
-
-    strcpy(clean_command, parsed_command);
-    clean_command[strcspn(clean_command, "\r\n")] = '\0';
-    free(parsed_command);
-
-    printf("DEBUG: Clean command: '%s'\n", clean_command);
-
-    // Tokenize command
-    int token_count = 0;
-    char **tokens = tokenise_command(clean_command, &token_count);
-    free(clean_command);
-
-    printf("DEBUG: Tokenized into %d tokens\n", token_count);
-
-    if (token_count == 0 || !tokens)
-    {
-        send_response_debug(client_socket, "-ERR Empty command\r\n");
-        if (tokens)
-            free_tokens(tokens, token_count);
-        return;
-    }
-
     printf("DEBUG: First token: '%s'\n", tokens[0]);
+    for (int i = 0; i < token_count; i++)
+    {
+        printf("DEBUG: Token %d: '%s'\n", i, tokens[i]);
+    }
 
     // Process commands
     char response[4096];
@@ -465,7 +473,7 @@ void process_client_command(int client_socket, Database *db, const char *command
         {
             // Return array of supported commands
             const char *command_list =
-                "*21\r\n"
+                "*24\r\n"
                 "$3\r\nSET\r\n"
                 "$3\r\nGET\r\n"
                 "$3\r\nDEL\r\n"
@@ -486,7 +494,10 @@ void process_client_command(int client_socket, Database *db, const char *command
                 "$4\r\nHGET\r\n"
                 "$7\r\nHGETALL\r\n"
                 "$4\r\nHDEL\r\n"
-                "$7\r\nHEXISTS\r\n";
+                "$7\r\nHEXISTS\r\n"
+                "$9\r\nSUBSCRIBE\r\n"
+                "$11\r\nUNSUBSCRIBE\r\n"
+                "$7\r\nPUBLISH\r\n";
             send_response_debug(client_socket, command_list);
         }
     }
@@ -915,6 +926,199 @@ void process_client_command(int client_socket, Database *db, const char *command
                 // Empty array
                 send_response_debug(client_socket, "*0\r\n");
             }
+        }
+    }
+    else if (strcasecmp(tokens[0], "SUBSCRIBE") == 0)
+    {
+        printf("DEBUG: Processing SUBSCRIBE\n");
+        if (token_count < 2)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'subscribe' command\r\n");
+        }
+        else
+        {
+            // Subscribe to all specified channels
+            char response[4096];
+            int offset = 0;
+
+            for (int i = 1; i < token_count; i++)
+            {
+                bool success = subscribe_command(pubsub, client_socket, tokens[i]);
+                if (success)
+                {
+                    // Send subscription confirmation (Redis format)
+                    snprintf(response + offset, sizeof(response) - offset,
+                             "*3\r\n$9\r\nsubscribe\r\n$%zu\r\n%s\r\n:%d\r\n",
+                             strlen(tokens[i]), tokens[i], i);
+                    offset = strlen(response);
+                }
+            }
+
+            if (offset > 0)
+            {
+                send_response_debug(client_socket, response);
+            }
+            else
+            {
+                send_response_debug(client_socket, "-ERR Failed to subscribe to channels\r\n");
+            }
+        }
+    }
+    else if (strcasecmp(tokens[0], "UNSUBSCRIBE") == 0)
+    {
+        printf("DEBUG: Processing UNSUBSCRIBE\n");
+        if (token_count == 1)
+        {
+            // Unsubscribe from all channels
+            unsubscribe_all_command(pubsub, client_socket);
+            send_response_debug(client_socket, "*2\r\n$11\r\nunsubscribe\r\n$-1\r\n");
+        }
+        else
+        {
+            // Unsubscribe from specified channels
+            char response[4096];
+            int offset = 0;
+
+            for (int i = 1; i < token_count; i++)
+            {
+                bool success = unsubscribe_command(pubsub, client_socket, tokens[i]);
+                if (success)
+                {
+                    // Send unsubscription confirmation (Redis format)
+                    snprintf(response + offset, sizeof(response) - offset,
+                             "*3\r\n$11\r\nunsubscribe\r\n$%zu\r\n%s\r\n:%d\r\n",
+                             strlen(tokens[i]), tokens[i], token_count - i);
+                    offset = strlen(response);
+                }
+            }
+
+            if (offset > 0)
+            {
+                send_response_debug(client_socket, response);
+            }
+            else
+            {
+                send_response_debug(client_socket, "-ERR Failed to unsubscribe from channels\r\n");
+            }
+        }
+    }
+    else if (strcasecmp(tokens[0], "PUBLISH") == 0)
+    {
+        printf("DEBUG: Processing PUBLISH\n");
+        if (token_count != 3)
+        {
+            send_response_debug(client_socket, "-ERR wrong number of arguments for 'publish' command\r\n");
+        }
+        else
+        {
+            int delivered = publish_command(pubsub, tokens[1], tokens[2]);
+            snprintf(response, sizeof(response), ":%d\r\n", delivered);
+            send_response_debug(client_socket, response);
+        }
+    }
+    else if (strcasecmp(tokens[0], "PUBSUB") == 0)
+    {
+        printf("DEBUG: Processing PUBSUB\n");
+        if (token_count >= 2 && strcasecmp(tokens[1], "CHANNELS") == 0)
+        {
+            // Return list of channels with at least one subscriber
+            pthread_mutex_lock(&pubsub->mutex);
+
+            char *resp_buffer = malloc(8192);
+            if (!resp_buffer)
+            {
+                send_response_debug(client_socket, "-ERR Out of memory\r\n");
+                pthread_mutex_unlock(&pubsub->mutex);
+            }
+            else
+            {
+                int channel_count = 0;
+                int offset = 0;
+
+                // First pass: count channels
+                for (int i = 0; i < 1024; i++)
+                {
+                    Channel *channel = pubsub->channels[i];
+                    while (channel)
+                    {
+                        if (channel->subscriber_count > 0)
+                        {
+                            channel_count++;
+                        }
+                        channel = channel->next;
+                    }
+                }
+
+                // Build response
+                offset = snprintf(resp_buffer, 8192, "*%d\r\n", channel_count);
+
+                // Second pass: add channel names
+                for (int i = 0; i < 1024 && offset < 8000; i++)
+                {
+                    Channel *channel = pubsub->channels[i];
+                    while (channel && offset < 8000)
+                    {
+                        if (channel->subscriber_count > 0)
+                        {
+                            offset += snprintf(resp_buffer + offset, 8192 - offset,
+                                               "$%zu\r\n%s\r\n", strlen(channel->name), channel->name);
+                        }
+                        channel = channel->next;
+                    }
+                }
+
+                send_response_debug(client_socket, resp_buffer);
+                free(resp_buffer);
+            }
+
+            pthread_mutex_unlock(&pubsub->mutex);
+        }
+        else if (token_count >= 3 && strcasecmp(tokens[1], "NUMSUB") == 0)
+        {
+            // Return number of subscribers for specified channels
+            char *resp_buffer = malloc(8192);
+            if (!resp_buffer)
+            {
+                send_response_debug(client_socket, "-ERR Out of memory\r\n");
+            }
+            else
+            {
+                int offset = snprintf(resp_buffer, 8192, "*%d\r\n", (token_count - 2) * 2);
+
+                pthread_mutex_lock(&pubsub->mutex);
+
+                for (int i = 2; i < token_count && offset < 8000; i++)
+                {
+                    const char *channel_name = tokens[i];
+                    int subscriber_count = 0;
+
+                    unsigned int index = pubsub_hash(channel_name);
+                    Channel *channel = pubsub->channels[index];
+
+                    while (channel)
+                    {
+                        if (strcmp(channel->name, channel_name) == 0)
+                        {
+                            subscriber_count = channel->subscriber_count;
+                            break;
+                        }
+                        channel = channel->next;
+                    }
+
+                    offset += snprintf(resp_buffer + offset, 8192 - offset,
+                                       "$%zu\r\n%s\r\n:%d\r\n",
+                                       strlen(channel_name), channel_name, subscriber_count);
+                }
+
+                pthread_mutex_unlock(&pubsub->mutex);
+
+                send_response_debug(client_socket, resp_buffer);
+                free(resp_buffer);
+            }
+        }
+        else
+        {
+            send_response_debug(client_socket, "-ERR Unknown PUBSUB subcommand\r\n");
         }
     }
     else if (strcasecmp(tokens[0], "SAVE") == 0)

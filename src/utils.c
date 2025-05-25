@@ -301,16 +301,31 @@ char *find_complete_resp_command(const char *buffer, size_t buffer_len, size_t *
 }
 
 // RESP protocol parsing
-char *parse_resp(const char *input, size_t input_len, int *token_count)
+char **parse_resp_tokens(const char *input, size_t input_len, int *token_count)
 {
     *token_count = 0;
 
     if (!input || input_len == 0)
         return NULL;
 
-    // Handle inline commands (non-RESP)
+    printf("DEBUG: parse_resp_tokens - Raw input (%zu bytes): ", input_len);
+    for (size_t i = 0; i < input_len && i < 100; i++)
+    {
+        if (input[i] >= 32 && input[i] <= 126)
+        {
+            printf("%c", input[i]);
+        }
+        else
+        {
+            printf("\\x%02x", (unsigned char)input[i]);
+        }
+    }
+    printf("%s\n", (input_len > 100) ? "..." : "");
+
+    // Handle inline commands (non-RESP) - need to tokenize these
     if (input[0] != '*')
     {
+        printf("DEBUG: parse_resp_tokens - Processing as inline command\n");
         // Find the end of the command (CRLF or end of string)
         size_t cmd_len = 0;
         for (size_t i = 0; i < input_len; i++)
@@ -324,16 +339,22 @@ char *parse_resp(const char *input, size_t input_len, int *token_count)
         if (cmd_len == 0)
             cmd_len = input_len;
 
-        char *result = malloc(cmd_len + 1);
-        if (!result)
+        char *cmd_str = malloc(cmd_len + 1);
+        if (!cmd_str)
             return NULL;
 
-        strncpy(result, input, cmd_len);
-        result[cmd_len] = '\0';
+        strncpy(cmd_str, input, cmd_len);
+        cmd_str[cmd_len] = '\0';
 
-        *token_count = 1; // Approximate - will be tokenized later
-        return result;
+        printf("DEBUG: parse_resp_tokens - Inline command: '%s'\n", cmd_str);
+
+        // For inline commands, we need to tokenize manually
+        char **tokens = tokenise_command(cmd_str, token_count);
+        free(cmd_str);
+        return tokens;
     }
+
+    printf("DEBUG: parse_resp_tokens - Processing as RESP array\n");
 
     // Parse RESP array
     // Find first CRLF
@@ -348,32 +369,40 @@ char *parse_resp(const char *input, size_t input_len, int *token_count)
     }
 
     if (first_crlf == 0)
+    {
+        printf("DEBUG: parse_resp_tokens - No CRLF found after array size\n");
         return NULL;
+    }
 
     // Parse array size
     int array_size = atoi(input + 1);
+    printf("DEBUG: parse_resp_tokens - Array size: %d\n", array_size);
+
     if (array_size <= 0)
         return NULL;
 
-    // Allocate array to store parsed elements
-    char **elements = malloc(sizeof(char *) * array_size);
-    if (!elements)
+    // Allocate array to store parsed elements (this will be our final result)
+    char **tokens = malloc(sizeof(char *) * array_size);
+    if (!tokens)
         return NULL;
 
     // Initialize all pointers for safe cleanup
     for (int i = 0; i < array_size; i++)
     {
-        elements[i] = NULL;
+        tokens[i] = NULL;
     }
 
     size_t pos = first_crlf + 2;
     bool parse_error = false;
 
-    // Parse each bulk string
+    // Parse each bulk string directly into tokens array
     for (int i = 0; i < array_size && !parse_error; i++)
     {
+        printf("DEBUG: parse_resp_tokens - Processing element %d at position %zu\n", i, pos);
+
         if (pos >= input_len || input[pos] != '$')
         {
+            printf("DEBUG: parse_resp_tokens - Expected '$' at position %zu, found '%c'\n", pos, (pos < input_len) ? input[pos] : '?');
             parse_error = true;
             break;
         }
@@ -393,11 +422,14 @@ char *parse_resp(const char *input, size_t input_len, int *token_count)
 
         if (!found)
         {
+            printf("DEBUG: parse_resp_tokens - No CRLF found after length for element %d\n", i);
             parse_error = true;
             break;
         }
 
         int str_len = atoi(input + pos + 1);
+        printf("DEBUG: parse_resp_tokens - Element %d length: %d\n", i, str_len);
+
         if (str_len < 0)
         {
             parse_error = true;
@@ -408,19 +440,22 @@ char *parse_resp(const char *input, size_t input_len, int *token_count)
 
         if (pos + str_len + 2 > input_len)
         {
+            printf("DEBUG: parse_resp_tokens - Not enough data for element %d (need %d more bytes)\n", i, (int)(pos + str_len + 2 - input_len));
             parse_error = true;
             break;
         }
 
-        elements[i] = malloc(str_len + 1);
-        if (!elements[i])
+        tokens[i] = malloc(str_len + 1);
+        if (!tokens[i])
         {
             parse_error = true;
             break;
         }
 
-        memcpy(elements[i], input + pos, str_len);
-        elements[i][str_len] = '\0';
+        memcpy(tokens[i], input + pos, str_len);
+        tokens[i][str_len] = '\0';
+
+        printf("DEBUG: parse_resp_tokens - Token %d: '%s'\n", i, tokens[i]);
 
         pos += str_len + 2;
     }
@@ -428,52 +463,17 @@ char *parse_resp(const char *input, size_t input_len, int *token_count)
     // Handle parsing errors - cleanup
     if (parse_error)
     {
+        printf("DEBUG: parse_resp_tokens - Parse error occurred\n");
         for (int i = 0; i < array_size; i++)
         {
-            free(elements[i]);
+            free(tokens[i]);
         }
-        free(elements);
+        free(tokens);
         return NULL;
-    }
-
-    // Calculate total length needed for result
-    size_t total_len = 1; // For null terminator
-    for (int i = 0; i < array_size; i++)
-    {
-        total_len += strlen(elements[i]);
-        if (i > 0)
-            total_len += 1; // Space separator
-    }
-
-    char *result = malloc(total_len);
-    if (!result)
-    {
-        // Cleanup
-        for (int i = 0; i < array_size; i++)
-        {
-            free(elements[i]);
-        }
-        free(elements);
-        return NULL;
-    }
-
-    // Build result string
-    result[0] = '\0';
-    for (int i = 0; i < array_size; i++)
-    {
-        if (i > 0)
-            strcat(result, " ");
-        strcat(result, elements[i]);
     }
 
     *token_count = array_size;
+    printf("DEBUG: parse_resp_tokens - Successfully parsed %d tokens\n", array_size);
 
-    // Cleanup elements array
-    for (int i = 0; i < array_size; i++)
-    {
-        free(elements[i]);
-    }
-    free(elements);
-
-    return result;
+    return tokens;
 }

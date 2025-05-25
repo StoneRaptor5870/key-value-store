@@ -13,6 +13,7 @@ A simple key-value store with both CLI and TCP server functionality.
 - Key expiry & TTL operations: EXPIRE, TTL, PERSIST
 - List operations: LPUSH, RPUSH, LPOP, RPOP, LLEN, LRANGE
 - Hash operations: HSET, HGET, HGETALL, HEXISTS, HDEL
+- PUB/SUB Commands: SUBSCRIBE, PUBLISH, UNSUBSCRIBE
 - Persistence: SAVE, LOAD
 - Compatible with Redis clients
 
@@ -91,6 +92,12 @@ bin/kv-store -h
 - `HGETALL key` – Returns all fields and values in a hash
 - `HEXISTS key field` – Checks if a field exists in a hash
 - `HDEL key field` – Deletes one fields from a hash
+
+### Pub/Sub Commands
+
+- `PUBLISH channel message` – Sends a message to all clients subscribed to the given channel
+- `SUBSCRIBE channel` – Subscribes the client to one or more channels
+- `UNSUBSCRIBE channel` – Unsubscribes the client from one or more channels (or all if none given)
 
 ### Persistence Commands
 

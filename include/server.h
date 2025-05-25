@@ -2,6 +2,7 @@
 #define SERVER_H
 
 #include "database.h"
+#include "pubsub.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -12,10 +13,10 @@
 bool start_server(Database *db, int port);
 
 // Function to handle client connection
-void handle_client(int client_socket, Database *db);
+void handle_client(int client_socket, Database *db, PubSubManager *pubsub);
 
 // Function to process commands received from client
-void process_client_command(int client_socket, Database *db, const char *command);
+void process_client_command(int client_socket, Database *db, PubSubManager *pubsub, const char *command);
 
 // Function to send response to client
 void send_response_debug(int client_socket, const char *response);
