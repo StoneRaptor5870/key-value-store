@@ -970,35 +970,139 @@ void process_client_command(int client_socket, Database *db, PubSubManager *pubs
         if (token_count == 1)
         {
             // Unsubscribe from all channels
+            printf("DEBUG: Unsubscribing from all channels\n");
+
+            // Get current subscriptions before unsubscribing
+            int current_count = 0;
+            char **current_channels = pubsub_get_subscribed_channels(pubsub, client_socket, &current_count);
+
+            // Unsubscribe from all
             unsubscribe_all_command(pubsub, client_socket);
-            send_response_debug(client_socket, "*2\r\n$11\r\nunsubscribe\r\n$-1\r\n");
+
+            // Send confirmation for each channel that was unsubscribed
+            char response[8192] = {0};
+            size_t offset = 0;
+
+            for (int i = 0; i < current_count; i++)
+            {
+                if (current_channels && current_channels[i])
+                {
+                    int remaining = current_count - i - 1;
+                    int written = snprintf(response + offset, sizeof(response) - offset,
+                                           "*3\r\n$11\r\nunsubscribe\r\n$%zu\r\n%s\r\n:%d\r\n",
+                                           strlen(current_channels[i]), current_channels[i], remaining);
+                    if (written > 0 && offset + (size_t)written < sizeof(response))
+                    {
+                        offset += (size_t)written;
+                    }
+                    free(current_channels[i]);
+                }
+            }
+            free(current_channels);
+
+            // If no channels were subscribed to, send a single response
+            if (current_count == 0)
+            {
+                snprintf(response, sizeof(response), "*3\r\n$11\r\nunsubscribe\r\n$-1\r\n:0\r\n");
+            }
+
+            send_response_debug(client_socket, response);
+            printf("DEBUG: Sent unsubscribe-all response\n");
         }
         else
         {
             // Unsubscribe from specified channels
-            char response[4096];
-            int offset = 0;
+            printf("DEBUG: Unsubscribing from %d specific channels\n", token_count - 1);
+
+            char response[8192] = {0};
+            size_t offset = 0;
+            int successful_unsubscribes = 0;
 
             for (int i = 1; i < token_count; i++)
             {
-                bool success = unsubscribe_command(pubsub, client_socket, tokens[i]);
-                if (success)
+                printf("DEBUG: Attempting to unsubscribe from channel: %s\n", tokens[i]);
+
+                // Check if client is currently subscribed to this channel
+                bool was_subscribed = pubsub_is_subscribed(pubsub, client_socket, tokens[i]);
+
+                if (was_subscribed)
                 {
-                    // Send unsubscription confirmation (Redis format)
-                    snprintf(response + offset, sizeof(response) - offset,
-                             "*3\r\n$11\r\nunsubscribe\r\n$%zu\r\n%s\r\n:%d\r\n",
-                             strlen(tokens[i]), tokens[i], token_count - i);
-                    offset = strlen(response);
+                    bool success = unsubscribe_command(pubsub, client_socket, tokens[i]);
+                    printf("DEBUG: Unsubscribe from %s: %s\n", tokens[i], success ? "SUCCESS" : "FAILED");
+
+                    if (success)
+                    {
+                        successful_unsubscribes++;
+
+                        // Get remaining subscription count
+                        int remaining_count = 0;
+                        char **remaining_channels = pubsub_get_subscribed_channels(pubsub, client_socket, &remaining_count);
+
+                        // Free the channels list (we only need the count)
+                        if (remaining_channels)
+                        {
+                            for (int j = 0; j < remaining_count; j++)
+                            {
+                                free(remaining_channels[j]);
+                            }
+                            free(remaining_channels);
+                        }
+
+                        // Send unsubscription confirmation
+                        int written = snprintf(response + offset, sizeof(response) - offset,
+                                               "*3\r\n$11\r\nunsubscribe\r\n$%zu\r\n%s\r\n:%d\r\n",
+                                               strlen(tokens[i]), tokens[i], remaining_count);
+
+                        if (written > 0 && offset + (size_t)written < sizeof(response))
+                        {
+                            offset += (size_t)written;
+                        }
+                        else
+                        {
+                            printf("DEBUG: Response buffer full, sending partial response\n");
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    printf("DEBUG: Client was not subscribed to channel %s\n", tokens[i]);
+
+                    // Still send a response for channels not subscribed to
+                    // Get current subscription count
+                    int current_count = 0;
+                    char **current_channels = pubsub_get_subscribed_channels(pubsub, client_socket, &current_count);
+
+                    // Free the channels list (we only need the count)
+                    if (current_channels)
+                    {
+                        for (int j = 0; j < current_count; j++)
+                        {
+                            free(current_channels[j]);
+                        }
+                        free(current_channels);
+                    }
+
+                    int written = snprintf(response + offset, sizeof(response) - offset,
+                                           "*3\r\n$11\r\nunsubscribe\r\n$%zu\r\n%s\r\n:%d\r\n",
+                                           strlen(tokens[i]), tokens[i], current_count);
+
+                    if (written > 0 && offset + (size_t)written < sizeof(response))
+                    {
+                        offset += (size_t)written;
+                    }
                 }
             }
 
             if (offset > 0)
             {
                 send_response_debug(client_socket, response);
+                printf("DEBUG: Sent unsubscribe response for %d channels\n", successful_unsubscribes);
             }
             else
             {
-                send_response_debug(client_socket, "-ERR Failed to unsubscribe from channels\r\n");
+                send_response_debug(client_socket, "-ERR Failed to process unsubscribe request\r\n");
+                printf("DEBUG: No response generated - this is unexpected\n");
             }
         }
     }

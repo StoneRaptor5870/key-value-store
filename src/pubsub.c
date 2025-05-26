@@ -3,16 +3,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <unistd.h>
 #include <sys/socket.h>
-#include <errno.h>
+#include <pthread.h>
 
 static char *my_strdup(const char *s)
 {
     if (!s)
         return NULL;
-
     size_t len = strlen(s) + 1;
     char *new_str = (char *)malloc(len);
     if (new_str)
@@ -41,13 +39,13 @@ PubSubManager *pubsub_create()
     if (!pubsub)
         return NULL;
 
-    // Initialise hash table
+    // Initialize hash table
     for (int i = 0; i < 1024; i++)
     {
         pubsub->channels[i] = NULL;
     }
 
-    // Initialise mutex
+    // Initialize mutex
     if (pthread_mutex_init(&pubsub->mutex, NULL) != 0)
     {
         free(pubsub);
@@ -57,26 +55,16 @@ PubSubManager *pubsub_create()
     return pubsub;
 }
 
-// Free subscriber
-static void free_subscriber(Subscriber *sub)
+// Free subscriber (only frees the subscriber struct, not the channel list)
+static void free_subscriber_node(Subscriber *sub)
 {
     if (!sub)
         return;
 
-    // Free channel names array
-    if (sub->channels)
-    {
-        for (size_t i = 0; i < sub->channel_count; i++)
-        {
-            free(sub->channels[i]);
-        }
-        free(sub->channels);
-    }
-
     free(sub);
 }
 
-// Free channel
+// Free channel and its subscriber references
 static void free_channel(Channel *channel)
 {
     if (!channel)
@@ -84,16 +72,48 @@ static void free_channel(Channel *channel)
 
     free(channel->name);
 
-    // Free all subscriber
+    // Free subscriber nodes
     Subscriber *sub = channel->subscribers;
     while (sub)
     {
         Subscriber *next = sub->next;
-        free_subscriber(sub);
+        free_subscriber_node(sub);
         sub = next;
     }
 
     free(channel);
+}
+
+// Free all subscriber data for a specific client
+static void free_subscriber_data(PubSubManager *pubsub, int client_socket)
+{
+    // Find and free the subscriber's channel list
+    for (int i = 0; i < 1024; i++)
+    {
+        Channel *channel = pubsub->channels[i];
+        while (channel)
+        {
+            Subscriber *sub = channel->subscribers;
+            while (sub)
+            {
+                if (sub->client_socket == client_socket && sub->channels)
+                {
+                    // Free the channel names array
+                    for (size_t j = 0; j < sub->channel_count; j++)
+                    {
+                        free(sub->channels[j]);
+                    }
+                    free(sub->channels);
+                    sub->channels = NULL;
+                    sub->channel_count = 0;
+                    sub->channel_capacity = 0;
+                    return; // Found and freed the data
+                }
+                sub = sub->next;
+            }
+            channel = channel->next;
+        }
+    }
 }
 
 // Free Pub/Sub manager
@@ -104,7 +124,51 @@ void pubsub_free(PubSubManager *pubsub)
 
     pthread_mutex_lock(&pubsub->mutex);
 
-    // Free all channels
+    // We need to collect all unique client sockets first
+    int *client_sockets = NULL;
+    int client_count = 0;
+
+    for (int i = 0; i < 1024; i++)
+    {
+        Channel *channel = pubsub->channels[i];
+        while (channel)
+        {
+            Subscriber *sub = channel->subscribers;
+            while (sub)
+            {
+                // Check if we've already seen this client
+                bool found = false;
+                for (int j = 0; j < client_count; j++)
+                {
+                    if (client_sockets[j] == sub->client_socket)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
+                {
+                    client_sockets = realloc(client_sockets, (client_count + 1) * sizeof(int));
+                    if (client_sockets)
+                    {
+                        client_sockets[client_count++] = sub->client_socket;
+                    }
+                }
+                sub = sub->next;
+            }
+            channel = channel->next;
+        }
+    }
+
+    // Free subscriber data for each unique client
+    for (int i = 0; i < client_count; i++)
+    {
+        free_subscriber_data(pubsub, client_sockets[i]);
+    }
+    free(client_sockets);
+
+    // Now free all channels
     for (int i = 0; i < 1024; i++)
     {
         Channel *channel = pubsub->channels[i];
@@ -186,7 +250,7 @@ void pubsub_remove_empty_channel(PubSubManager *pubsub, const char *channel_name
     }
 }
 
-// Find subscriber in channel
+// Find subscriber node in channel
 static Subscriber *find_subscriber_in_channel(Channel *channel, int client_socket)
 {
     Subscriber *sub = channel->subscribers;
@@ -198,7 +262,29 @@ static Subscriber *find_subscriber_in_channel(Channel *channel, int client_socke
         }
         sub = sub->next;
     }
+    return NULL;
+}
 
+// Find the main subscriber data (with channels array) for a client
+static Subscriber *find_main_subscriber(PubSubManager *pubsub, int client_socket)
+{
+    for (int i = 0; i < 1024; i++)
+    {
+        Channel *channel = pubsub->channels[i];
+        while (channel)
+        {
+            Subscriber *sub = channel->subscribers;
+            while (sub)
+            {
+                if (sub->client_socket == client_socket && sub->channels != NULL)
+                {
+                    return sub;
+                }
+                sub = sub->next;
+            }
+            channel = channel->next;
+        }
+    }
     return NULL;
 }
 
@@ -221,7 +307,6 @@ static bool add_channel_to_subscriber(Subscriber *sub, const char *channel_name)
         char **new_channels = realloc(sub->channels, new_capacity * sizeof(char *));
         if (!new_channels)
             return false;
-
         sub->channels = new_channels;
         sub->channel_capacity = new_capacity;
     }
@@ -254,6 +339,22 @@ static void remove_channel_from_subscriber(Subscriber *sub, const char *channel_
     }
 }
 
+// Create a new subscriber node (without channels array)
+static Subscriber *create_subscriber_node(int client_socket)
+{
+    Subscriber *sub = malloc(sizeof(Subscriber));
+    if (!sub)
+        return NULL;
+
+    sub->client_socket = client_socket;
+    sub->channels = NULL;
+    sub->channel_count = 0;
+    sub->channel_capacity = 0;
+    sub->next = NULL;
+
+    return sub;
+}
+
 // Subscribe to channel
 bool pubsub_subscribe(PubSubManager *pubsub, int client_socket, const char *channel_name)
 {
@@ -269,7 +370,7 @@ bool pubsub_subscribe(PubSubManager *pubsub, int client_socket, const char *chan
         return false;
     }
 
-    // Check if already subscribed
+    // Check if already subscribed to this channel
     Subscriber *existing = find_subscriber_in_channel(channel, client_socket);
     if (existing)
     {
@@ -277,52 +378,64 @@ bool pubsub_subscribe(PubSubManager *pubsub, int client_socket, const char *chan
         return true; // Already subscribed
     }
 
-    // Create new subscriber or find existing one
-    Subscriber *sub = NULL;
-
-    // Look for existing subscriber in other channels (to reuse the subscriber object)
-    for (int i = 0; i < 1024 && !sub; i++)
+    // Find or create the main subscriber data
+    Subscriber *main_sub = find_main_subscriber(pubsub, client_socket);
+    if (!main_sub)
     {
-        Channel *other_channel = pubsub->channels[i];
-        while (other_channel && !sub)
-        {
-            sub = find_subscriber_in_channel(other_channel, client_socket);
-            other_channel = other_channel->next;
-        }
-    }
-
-    if (!sub)
-    {
-        // Create new subscriber
-        sub = malloc(sizeof(Subscriber));
-        if (!sub)
+        // Create the main subscriber (this one will hold the channels array)
+        main_sub = create_subscriber_node(client_socket);
+        if (!main_sub)
         {
             pthread_mutex_unlock(&pubsub->mutex);
             return false;
         }
 
-        sub->client_socket = client_socket;
-        sub->channels = NULL;
-        sub->channel_count = 0;
-        sub->channel_capacity = 0;
+        // Initialize channels array
+        main_sub->channels = NULL;
+        main_sub->channel_count = 0;
+        main_sub->channel_capacity = 0;
     }
 
     // Add channel to subscriber's list
-    if (!add_channel_to_subscriber(sub, channel_name))
+    if (!add_channel_to_subscriber(main_sub, channel_name))
     {
-        if (sub->channel_count == 0)
+        if (main_sub->channel_count == 0)
         {
-            free_subscriber(sub);
+            free(main_sub);
         }
         pthread_mutex_unlock(&pubsub->mutex);
         return false;
     }
 
-    // Add subscriber to channel (only if not already there)
-    if (!find_subscriber_in_channel(channel, client_socket))
+    // Create a subscriber node for this channel (shares client_socket but no channels array)
+    Subscriber *channel_sub = create_subscriber_node(client_socket);
+    if (!channel_sub)
     {
-        sub->next = channel->subscribers;
-        channel->subscribers = sub;
+        // Remove the channel we just added
+        remove_channel_from_subscriber(main_sub, channel_name);
+        if (main_sub->channel_count == 0)
+        {
+            free(main_sub->channels);
+            free(main_sub);
+        }
+        pthread_mutex_unlock(&pubsub->mutex);
+        return false;
+    }
+
+    // If this is the first subscription, we need to add main_sub to some channel
+    if (main_sub->channel_count == 1)
+    {
+        // Use the main_sub as the channel subscriber
+        main_sub->next = channel->subscribers;
+        channel->subscribers = main_sub;
+        channel->subscriber_count++;
+        free(channel_sub); // Don't need the extra node
+    }
+    else
+    {
+        // Add the new subscriber node to the channel
+        channel_sub->next = channel->subscribers;
+        channel->subscribers = channel_sub;
         channel->subscriber_count++;
     }
 
@@ -355,13 +468,44 @@ bool pubsub_unsubscribe(PubSubManager *pubsub, int client_socket, const char *ch
                     *current = (*current)->next;
                     channel->subscriber_count--;
 
-                    // Remove channel from subscriber's list
-                    remove_channel_from_subscriber(to_remove, channel_name);
-
-                    // If subscriber has no more channels, free it
-                    if (to_remove->channel_count == 0)
+                    // Update the main subscriber's channel list
+                    if (to_remove->channels)
                     {
-                        free_subscriber(to_remove);
+                        // This is the main subscriber
+                        remove_channel_from_subscriber(to_remove, channel_name);
+
+                        if (to_remove->channel_count == 0)
+                        {
+                            // No more channels, free the subscriber data
+                            free(to_remove->channels);
+                            free(to_remove);
+                        }
+                        else
+                        {
+                            // Still has channels, need to move it to another channel
+                            // Find another channel this client is subscribed to
+                            for (size_t i = 0; i < to_remove->channel_count; i++)
+                            {
+                                Channel *other_channel = pubsub_get_or_create_channel(pubsub, to_remove->channels[i]);
+                                if (other_channel && other_channel != channel)
+                                {
+                                    // Check if client is already in this channel's list
+                                    if (!find_subscriber_in_channel(other_channel, client_socket))
+                                    {
+                                        // Add to this channel
+                                        to_remove->next = other_channel->subscribers;
+                                        other_channel->subscribers = to_remove;
+                                        other_channel->subscriber_count++;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // This is just a reference node, free it
+                        free(to_remove);
                     }
 
                     // Remove empty channel
@@ -379,6 +523,7 @@ bool pubsub_unsubscribe(PubSubManager *pubsub, int client_socket, const char *ch
         }
         channel = channel->next;
     }
+
     pthread_mutex_unlock(&pubsub->mutex);
     return false;
 }
@@ -391,27 +536,27 @@ void pubsub_unsubscribe_all(PubSubManager *pubsub, int client_socket)
 
     pthread_mutex_lock(&pubsub->mutex);
 
-    // Find all channels this client is subscribed to
-    char **channels_to_unsubscribe = NULL;
-    int channel_count = 0;
-
-    for (int i = 0; i < 1024; i++)
+    // Find the main subscriber
+    Subscriber *main_sub = find_main_subscriber(pubsub, client_socket);
+    if (!main_sub)
     {
-        Channel *channel = pubsub->channels[i];
-        while (channel)
+        pthread_mutex_unlock(&pubsub->mutex);
+        return;
+    }
+
+    // Get a copy of the channels list
+    char **channels_to_unsubscribe = NULL;
+    int channel_count = main_sub->channel_count;
+
+    if (channel_count > 0)
+    {
+        channels_to_unsubscribe = malloc(channel_count * sizeof(char *));
+        if (channels_to_unsubscribe)
         {
-            if (find_subscriber_in_channel(channel, client_socket))
+            for (int i = 0; i < channel_count; i++)
             {
-                // Add to list of channels to unsubscribe from
-                channels_to_unsubscribe = realloc(channels_to_unsubscribe,
-                                                  (channel_count + 1) * sizeof(char *));
-                if (channels_to_unsubscribe)
-                {
-                    channels_to_unsubscribe[channel_count] = my_strdup(channel->name);
-                    channel_count++;
-                }
+                channels_to_unsubscribe[i] = my_strdup(main_sub->channels[i]);
             }
-            channel = channel->next;
         }
     }
 
@@ -420,13 +565,12 @@ void pubsub_unsubscribe_all(PubSubManager *pubsub, int client_socket)
     // Unsubscribe from each channel
     for (int i = 0; i < channel_count; i++)
     {
-        if (channels_to_unsubscribe[i])
+        if (channels_to_unsubscribe && channels_to_unsubscribe[i])
         {
             pubsub_unsubscribe(pubsub, client_socket, channels_to_unsubscribe[i]);
             free(channels_to_unsubscribe[i]);
         }
     }
-
     free(channels_to_unsubscribe);
 }
 
@@ -466,12 +610,12 @@ int pubsub_publish(PubSubManager *pubsub, const char *channel_name, const char *
                 }
                 else
                 {
-                    // Client might be disconnected - we'll handle cleanup elsewhere
+                    // Client might be disconnected
                     printf("Failed to deliver message to client %d\n", sub->client_socket);
                 }
-
                 sub = sub->next;
             }
+
             pthread_mutex_unlock(&pubsub->mutex);
             return delivered;
         }
@@ -523,21 +667,25 @@ char **pubsub_get_subscribed_channels(PubSubManager *pubsub, int client_socket, 
     *count = 0;
     char **result = NULL;
 
-    for (int i = 0; i < 1024; i++)
+    // Find the main subscriber
+    Subscriber *main_sub = find_main_subscriber(pubsub, client_socket);
+    if (main_sub && main_sub->channels)
     {
-        Channel *channel = pubsub->channels[i];
-        while (channel)
+        *count = main_sub->channel_count;
+        if (*count > 0)
         {
-            if (find_subscriber_in_channel(channel, client_socket))
+            result = malloc(*count * sizeof(char *));
+            if (result)
             {
-                result = realloc(result, (*count + 1) * sizeof(char *));
-                if (result)
+                for (int i = 0; i < *count; i++)
                 {
-                    result[*count] = my_strdup(channel->name);
-                    (*count)++;
+                    result[i] = my_strdup(main_sub->channels[i]);
                 }
             }
-            channel = channel->next;
+            else
+            {
+                *count = 0;
+            }
         }
     }
 

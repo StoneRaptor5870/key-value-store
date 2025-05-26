@@ -234,13 +234,11 @@ bool subscribe_command(PubSubManager *pubsub, int client_socket, const char *cha
 
 bool unsubscribe_command(PubSubManager *pubsub, int client_socket, const char *channel)
 {
-    // TODO Fix unsubscribe error
     return pubsub_unsubscribe(pubsub, client_socket, channel);
 }
 
 void unsubscribe_all_command(PubSubManager *pubsub, int client_socket)
 {
-    // TODO Check this one too
     return pubsub_unsubscribe_all(pubsub, client_socket);
 }
 
