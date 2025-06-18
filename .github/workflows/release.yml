@@ -1,0 +1,28 @@
+name: Create GitHub Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Upload Release Assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build .deb (optional if not prebuilt)
+        run: |
+          make
+          mkdir -p kv-store-1.0.0/usr/local/bin
+          cp bin/kv-store kv-store-1.0.0/usr/local/bin/
+          dpkg-deb --build kv-store-1.0.0
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            kv-store-1.0.0.deb
