@@ -25,9 +25,34 @@ void print_usage(const char *program_name)
 // Main function
 int main(int argc, char *argv[])
 {
+    // Create database
+    Database *db = db_create();
     int port = DEFAULT_PORT;
     bool interactive_mode = false;
     char *load_file = NULL;
+
+    char *port_env = getenv("PORT");
+    if (port_env) {
+        port = atoi(port_env);
+        printf("Using PORT from environment: %d\n", port);
+    }
+
+     // Then parse command line arguments (they can override env var)
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+            port = atoi(argv[i + 1]);
+            i++;
+        } else if (strcmp(argv[i], "-i") == 0) {
+            interactive_mode = true;
+        } else if (strcmp(argv[i], "-f") == 0 && i + 1 < argc) {
+            load_file = argv[i + 1];
+            i++;
+        } else if (strcmp(argv[i], "-h") == 0) {
+            print_help();
+            db_free(db);
+            return 0;
+        }
+    }
 
     // Parse command line arguments
     int opt;
@@ -57,9 +82,6 @@ int main(int argc, char *argv[])
             return 1;
         }
     }
-
-    // Create database
-    Database *db = db_create();
 
     // Load database if specified
     if (load_file)

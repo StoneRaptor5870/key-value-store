@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: kv-store
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
