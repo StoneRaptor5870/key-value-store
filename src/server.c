@@ -328,34 +328,12 @@ bool start_server(Database *db, int port)
     return true;
 }
 
-void send_http_response(int client_socket, const char *status, const char *body) {
-    char response[1024];
-    snprintf(response, sizeof(response),
-        "HTTP/1.1 %s\r\n"
-        "Content-Type: text/plain\r\n"
-        "Content-Length: %lu\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-        "%s", status, strlen(body), body);
-    
-    send(client_socket, response, strlen(response), 0);
-}
-
-void handle_http_request(int client_socket, const char *request) {
-    if (strstr(request, "GET /health") || strstr(request, "GET /")) {
-        send_http_response(client_socket, "200 OK", "OK");
-    } else {
-        send_http_response(client_socket, "404 Not Found", "Not Found");
-    }
-}
-
 // Function to handle client connection with proper buffer management
 void handle_client(int client_socket, Database *db, PubSubManager *pubsub)
 {
     DynamicBuffer command_buffer;
     char recv_buffer[4096];
     ssize_t bytes_read;
-    int is_http_request = 0;
 
     printf("DEBUG: Starting handle_client\n");
 
@@ -386,45 +364,16 @@ void handle_client(int client_socket, Database *db, PubSubManager *pubsub)
 
         printf("DEBUG: Received %zd bytes\n", bytes_read);
 
-        // Check if this is the first data received and if it's an HTTP request
-        if (command_buffer.size == 0 && bytes_read >= 4 && 
-            strncmp(recv_buffer, "GET ", 4) == 0) {
-            is_http_request = 1;
-        }
-
         // Append to command buffer
         if (!buffer_append(&command_buffer, recv_buffer, bytes_read))
         {
-            if (!is_http_request) {
-                send_response_debug(client_socket, "-ERR Command too large\r\n");
-            }
+            send_response_debug(client_socket, "-ERR Command too large\r\n");
             break;
         }
 
         printf("DEBUG: Buffer now contains %zu bytes\n", command_buffer.size);
 
-        // Handle HTTP request
-        if (is_http_request) {
-            // Null-terminate the buffer for string operations
-            char *null_term_buffer = malloc(command_buffer.size + 1);
-            if (!null_term_buffer) {
-                fprintf(stderr, "Memory allocation failed\n");
-                break;
-            }
-            memcpy(null_term_buffer, command_buffer.data, command_buffer.size);
-            null_term_buffer[command_buffer.size] = '\0';
-            
-            // Check if we have a complete HTTP request (ends with \r\n\r\n)
-            if (strstr(null_term_buffer, "\r\n\r\n")) {
-                handle_http_request(client_socket, null_term_buffer);
-                free(null_term_buffer);
-                break; // Close connection after HTTP response
-            }
-            free(null_term_buffer);
-            continue; // Wait for more HTTP data
-        }
-
-        // Process Redis protocol commands
+        // Process all complete commands in the buffer
         while (command_buffer.size > 0)
         {
             size_t command_len = 0;
